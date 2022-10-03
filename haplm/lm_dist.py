@@ -495,4 +495,13 @@ def mat_by_marker(G):
     2D-array
         Configuration matrix for latent multinomial vector.
     """
-    return np.array([[(h >> i) & 1 for h in range(2**G)] for i in range(G)])
+    return np.array([[(h >> i) & 1 for h in range(2**G)] for i in range(G)], int)
+
+import shutil
+def find_4ti2_prefix():
+    if shutil.which('markov') is not None:
+        return ''
+    if shutil.which('4ti2-markov') is not None:
+        return '4ti2-'
+    else:
+        raise RuntimeError("Cannot find 4ti2 prefix, please replace this function call with the prefix to 4ti2's `markov`")

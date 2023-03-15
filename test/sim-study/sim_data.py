@@ -1,5 +1,5 @@
 import numpy as np
-from haplm.lm_dist import mat_by_marker
+from haplm.hap_utils import mat_by_marker
 
 def gen_sim_data(n_pools, n_markers, pool_size,
 			     alphas, seed, fn):
@@ -36,18 +36,19 @@ def gen_sim_data(n_pools, n_markers, pool_size,
 	ptrue = np.random.dirichlet(alphas)
 
 	with open(f'{fn}.prob', 'w') as fp:
-		fp.write(' '.join([str(p) for p in ptrue]))
-		fp.write('\n')
+		fp.write('\n'.join([str(p) for p in ptrue]))
 
 	amat = mat_by_marker(n_markers)
-
+	#present = np.zeros(H)
 	with open(f'{fn}.data', 'w') as fp:
 		for _ in range(n_pools):
 			zvec = np.random.multinomial(pool_size, ptrue)
+			#present[zvec>0] = 1
 			yvec = np.dot(amat, zvec).astype(int)
 
 			fp.write(' '.join([str(pool_size)] + [str(y) for y in yvec]))
 			fp.write('\n')
+	#print(present.sum())
 
 def parse_sim_data(fn):
 	"""

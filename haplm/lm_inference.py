@@ -5,17 +5,15 @@ import scipy.stats
 from scipy.special import softmax, gammaln, logsumexp
 import pulp
 import sympy
-import random
 import math
 from time import time
 import xarray
 
 from typing import Any, Callable, Dict, List, Tuple
 import pymc as pm
-from pymc.aesaraf import compile_pymc
 from pymc.distributions.dist_math import check_parameters, factln, logpow
 from pymc.blocking import RaveledVars
-from pymc.math import logsumexp, logdet
+from pymc.math import logdet
 from pymc.step_methods.arraystep import metrop_select, ArrayStepShared
 from pymc.step_methods.metropolis import delta_logp
 import arviz as az
@@ -26,6 +24,7 @@ from aesara.graph.basic import vars_between
 
 from atpbar import atpbar, register_reporter, find_reporter, flush
 import multiprocessing
+import sys
 
 
 def latent_mult_chain(c, s):
@@ -34,19 +33,17 @@ def latent_mult_chain(c, s):
 def latent_mult_cgibbs_chain(c, s):
     return latent_mult_mcmc_cgibbs.mcmc(c, s)
 
-
-def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods, 
+def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
                      logprior_func=None,
-                     tune_itv=50, p_updates=5,
                      chains=5, cores=1, seeds=None):   
     if logprior_func is None:
-        logprior_func = lambda p: 0
+        logprior_func = lambda p: 0 # at.as_tensor_variable(0)
     
     if seeds is None:
         seeds = [None]*chains
-    assert len(seeds) == chains        
-    
-    p_tensor = at.vector('p')
+    else:
+        seeds = list(seeds)
+    assert len(seeds) == chains
     
     # check if no need for approximation nor discrete sampling
     for i, lm in enumerate(lm_list):
@@ -57,275 +54,73 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
     basis_is = [i for i, method in enumerate(methods) if method=='basis']
     mn_is = [i for i, method in enumerate(methods) if method=='mn_approx']
     assert len(exact_is)+len(basis_is)+len(mn_is) == len(lm_list)
-    
-    loglike_contribs = []
-    for i in exact_is:
-        loglike_contribs.append(lm_list[i].loglike_exact(p_tensor))
-    for i in mn_is:
-        loglike_contribs.append(lm_list[i].loglike_mn(p_tensor))   
-    for i in basis_is:
-        lm = lm_list[i]
-        loglike_contribs.append(at.dot(lm.z_fix, at.log(p_tensor[lm.idx_fix])))
+
+    def make_logp(lm, method):
+        if method == 'exact':
+            return lambda z, p: lm.loglike_exact(p)
+        elif method == 'mn_approx':
+            return lambda z, p: lm.loglike_mn(p)
+
+    class CustomRV(RandomVariable):
+        name = "custom"
+        ndim_supp = 1
+        ndims_params = [1]
+        dtype = "floatX"
+        _print_name = ("Custom", "\\operatorname{Custom}")
+
+        def __call__(self, param, size=None, **kwargs):
+            return super().__call__(param, size=size, **kwargs)
+
+    custom = CustomRV()
+
+    class Custom(pm.distributions.multivariate.SimplexContinuous):
+        rv_op = custom
+
+        @classmethod
+        def dist(cls, param, **kwargs):
+            return super().dist([param], **kwargs)
+
+        def moment(rv, size, param):
+            return at.ones(H)/H
+
+        def logp(value, param):
+            return logprior_func(value)
+
+    with pm.Model() as model:
+        #p = pm.Dirichlet('p', np.ones(H))
+        p = Custom('p', np.ones(H), shape=(H,))
+        #ys_mn = pm.Potential('ys_mn', lm_list[0].loglike_exact(p))
+
+        if mn_is:
+            ys_mn = pm.Potential('ys_mn', sum(lm_list[i].loglike_mn(p) for i in mn_is))
+        if exact_is:
+            ys_exact = pm.Potential('ys_exact', sum(lm_list[i].loglike_exact(p) for i in exact_is))
         
-    loglike_func = aesara.function([p_tensor], at.sum(loglike_contribs))
+        # ys_mn = [pm.DensityDist('y'+str(i), p,
+        #                         logp=make_logp(lm_list[i], 'mn_approx'),
+        #                         observed=np.zeros(1), dtype='int64')
+        #          for i in mn_is]
+        # ys_exact = [pm.DensityDist('y'+str(i), p,
+        #                         logp=make_logp(lm_list[i], 'exact'),
+        #                         observed=np.zeros(1), dtype='int64')
+        #          for i in exact_is]
                
     if basis_is:
-        latent_mult_mcmc.mcmc = lambda c, s: latent_mult_sample_basis(lm_list, H, n_sample, n_burnin,
-                                                                      loglike_func, logprior_func, basis_is,
-                                                                      tune_itv, p_updates, chain=c, seed=s)
+        raise NotImplementedError
     
     else:
-        latent_mult_mcmc.mcmc = lambda c, s: latent_mult_sample(lm_list, H, n_sample, n_burnin,
-                                                                loglike_func, logprior_func,
-                                                                tune_itv, p_updates, chain=c, seed=s)  
-        
-    if cores==1:
-        outputs = [latent_mult_mcmc.mcmc(c, s) for c, s in zip(range(chains), seeds)]
-    
-    else:        
-        reporter = find_reporter()
-        with multiprocessing.Pool(cores, register_reporter, [reporter]) as p:
-            outputs = p.starmap(latent_mult_chain, list(zip(range(chains), seeds)))
-            flush()
-    
-    posterior = {}
-    sample_stats = {}
-    for key in outputs[0]:
-        stacked = np.stack([output[key] for output in outputs])
-        ndims = len(stacked.shape)
-        if ndims > 1 and stacked.shape[1] == n_sample:
-            dims = ['chain', 'draw', f'{key[6:]}_dim'][:ndims]
-        else:
-            dims = ['chain', 'znum'][:ndims]        
-        
-        if key[:6] == 'trace_':
-            posterior[key[6:]] = (dims, stacked)
-        else:
-            sample_stats[key] = (dims, stacked)
+        with model:
+            idata = pm.sample(draws=n_sample, tune=n_burnin,
+                              step=[pm.NUTS(target_accept=0.9)],
+                              chains=chains, cores=cores, random_seed=seeds,
+                              compute_convergence_checks=False)
 
-    return az.InferenceData(posterior=xarray.Dataset(posterior),
-                            sample_stats=xarray.Dataset(sample_stats))
+    return idata  
 
 
-def latent_mult_sample_basis(lm_list, H, n_sample, n_burnin,
-                             loglike_func, logprior_func, basis_is,
-                             tune_itv=50, p_updates=5, chain=0, seed=None):
-    t = time()
-    
-    logfacts = gammaln(np.arange(1,max(lm_list[i].n_var for i in basis_is)+2))
-    rng = np.random.default_rng(seed)
-    random.seed(seed)
-    
-    p0 = rng.dirichlet(np.ones(H))
-    loglike0 = loglike_func(p0) + logprior_func(p0)
-    
-    zs = [lm_list[i].inits[chain] for i in basis_is]
-    logp_zs = [z*np.log(p0[lm_list[i].idx_var])-np.sum(logfacts[z]) for i, z in zip(basis_is, zs)]   
-    
-    acc = 0
-    stab = 0.5
-    scale = 0.1
-    
-    nz = len(basis_is)
-    n_sims_arr = 10*np.ones(nz, int)
-    max_step_arr = 1*np.ones(nz, int)
-    zacc_arr = np.zeros(nz, int)   
-    moves_arr = np.zeros(nz, int)
-    trg_moves = 10
-    bsizes = [len(lm_list[i].basis) for i in basis_is]
-    ncols = [len(lm_list[i].idx_var) for i in basis_is]
-    
-    acc_moves_arr = [[] for _ in range(nz)]
-    tune_accs_arr = [0]*nz
-    
-    trace_p = []
-    trace_zs = [[] for _ in basis_is]
-    lp = []
-    for i in atpbar(range(n_sample + n_burnin),
-                    time_track=True,
-                    name=f'chain {chain}'):
-        if i == n_burnin:
-            post_burnin = time()
-        if i%tune_itv == 0 and 0 < i < n_burnin:
-            # tune p
-            scale = tune_scale(scale, acc/(tune_itv*p_updates))
-            acc = 0
-            
-            # tune z
-            for idx in range(nz):
-                if moves_arr[idx]:
-                    max_step_arr[idx] = tune_max_step(max_step_arr[idx], zacc_arr[idx]/moves_arr[idx])
-                n_sims_arr[idx] = tune_n_sims(n_sims_arr[idx], moves_arr[idx]/tune_itv, trg_moves)
-                zacc_arr[idx] = 0
-                moves_arr[idx] = 0
-        
-        # update p
-        for _ in range(p_updates):
-            prop_as0 = p0/scale + stab
-            p = rng.dirichlet(prop_as0)
-            prop_as = p/scale + stab
-            
-            loglike = loglike_func(p) + logprior_func(p)
-            
-            if math.log(random.random()) < (loglike - loglike0
-                                            + sum(np.dot(z, np.log(p[lm_list[j].idx_var])-np.log(p0[lm_list[j].idx_var]))
-                                                  for j, z in zip(basis_is, zs))
-                                            - (np.dot(prop_as0-1, np.log(p))-gammaln(prop_as0).sum()) 
-                                            + (np.dot(prop_as-1, np.log(p0))-gammaln(prop_as).sum())):
-                p0 = p
-                loglike0 = loglike
-                acc += 1
-        curr_lp = loglike0
-
-        # update z        
-        logp0 = np.log(p0)
-        prob_prev = min(0.8, i/n_burnin - 0.2) # prob of using previous move as delta
-
-        for idx in range(nz):            
-            j = basis_is[idx]
-            n_sims = n_sims_arr[idx]
-            
-            basis = lm_list[j].basis
-            bsize = bsizes[idx]
-            ncol = ncols[idx]
-            
-            logp_var = logp0[lm_list[j].idx_var]
-            q0 = zs[idx]
-            lp_q0 = np.dot(q0,logp_var)-sum(logfacts[qidx] for qidx in q0)
-            
-            # symmetric 
-            if lm_list[j].markov:                
-                deltas = basis[rng.integers(bsize, size=n_sims)]
-            else:
-                if bsize > 1:
-                    geo_denom = math.log(1 - max(0.2, 1/math.sqrt(bsize)))
-                deltas = []
-                for m in range(n_sims):
-                    rand = random.random()
-                    if rand < prob_prev and tune_accs_arr[idx]:
-                        deltas.append(acc_moves_arr[idx][int(rand/prob_prev*tune_accs_arr[idx])])
-                    else:
-                        sgn_dict = {}
-                        delta = np.zeros(ncol, int)
-                        repeats = 1 if bsize == 1 else int(math.log(random.random())/geo_denom) + 1
-                        for _ in range(repeats):
-                            bidx = int(random.random()*bsize)
-                            sgn = sgn_dict.get(bidx)
-                            if sgn is None:
-                                sgn = sgn_dict[bidx] = random.getrandbits(1)
-                            if sgn:
-                                delta += basis[bidx]
-                            else:
-                                delta -= basis[bidx]
-                            deltas.append(delta)
-                
-            step_rands = rng.random(size=n_sims)
-            mh_rands = np.log(rng.random(size=n_sims))
-            
-            for delta, step_rand, mh_rand in zip(deltas, step_rands, mh_rands):                
-                neg_step, pos_step = n_steps(q0, delta, max_step_arr[idx])                
-                tot_step = neg_step + pos_step
-                if tot_step == 0:
-                    continue                
-                
-                moves_arr[idx] += 1
-                rand_int = int(step_rand*tot_step)
-                if rand_int < neg_step:
-                    q = q0 - (rand_int+1)*delta
-                else:
-                    q = q0 + (tot_step-rand_int)*delta
-                
-                s1, s2 = n_steps(q, delta, max_step_arr[idx])
-                
-                lp_q = np.dot(q,logp_var)-sum(logfacts[qidx] for qidx in q)
-                accept = lp_q - lp_q0 + np.log(tot_step / (s1+s2))
-                if mh_rand < accept:
-                    q0 = q
-                    zacc_arr[idx] += 1
-                    lp_q0 = lp_q  
-                    if 0.1 < i/n_burnin < 1 and not lm_list[j].markov:
-                        tune_accs_arr[idx] += 1
-                        acc_moves_arr[idx].append(delta)
-                
-            zs[idx] = q0     
-            curr_lp += lp_q0
-
-        if i >= n_burnin:
-            trace_p.append(p0)
-            for idx in range(nz):
-                trace_zs[idx].append(zs[idx])
-            lp.append(curr_lp)
-
-    output = {'trace_p': np.array(trace_p),
-              'lp': np.array(lp),
-              'p_scale': scale,
-              'p_accrate': acc/(n_sample*p_updates),
-              'n_sims': n_sims_arr,
-              'max_step': max_step_arr,
-              'zacc_rate': zacc_arr/moves_arr,
-              'moves_avg': moves_arr/n_sample,
-              'time_excl_tune': time()-post_burnin,
-              'time_incl_tune': time()-t}
-    output.update({f'trace_z{basis_is[idx]}': np.array(trace_zs[idx]) for idx in range(nz)})
-
-    #print(sorted(Counter([tuple(arr) for arr in trace_zs[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
-    #print(sorted(Counter([tuple(arr) for arr in acc_moves_arr[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
-
-    return output
-
-        
-def latent_mult_sample(lm_list, H, n_sample, n_burnin,
-                       logprior_func, loglike_func,
-                       tune_itv=50, p_updates=5, chain=0, seed=None):    
-    t = time()
-    rng = np.random.default_rng(seed)
-    p0 = rng.dirichlet(np.ones(H))
-    #logp0 = np.log(p0)
-    loglike0 = loglike_func(p0) + logprior_func(p0)
-    acc = 0
-    stab = 0.5
-    scale = 0.1
-    
-    trace_p = []
-    lp = []
-    for i in atpbar(range(n_sample + n_burnin),
-                    time_track=True,
-                    name=f'chain {chain}'):
-        if i == n_burnin:
-            post_burnin = time()
-        if i%tune_itv == 0 and 0 < i < n_burnin:
-            scale = tune_scale(scale, acc/(tune_itv*p_updates))
-            acc = 0
-            
-        for _ in range(p_updates):
-            prop_as0 = p0/scale + stab
-            p = rng.dirichlet(prop_as0)
-            #logp = np.log(p)
-            prop_as = p/scale + stab
-            
-            loglike = loglike_func(p) + logprior_func(p)
-            if math.log(random.random()) < (loglike - loglike0
-                                            - (np.dot(prop_as0-1, np.log(p))-gammaln(prop_as0).sum()) 
-                                            + (np.dot(prop_as-1, np.log(p0))-gammaln(prop_as).sum())):
-                p0 = p
-                #logp0 = logp
-                loglike0 = loglike
-                acc += 1
-
-        if i >= n_burnin:
-            trace_p.append(p0)
-            lp.append(loglike0)
-
-    return {'trace_p': np.array(trace_p),
-            'lp': np.array(lp),
-            'p_scale': scale,
-            'p_accrate': acc/(n_sample*p_updates),
-            'time_excl_tune': time()-post_burnin,
-            'time_incl_tune': time()-t}
-
-
-def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None, adapt=False,
-                           tune_itv=50, chains=5, cores=1, seeds=None):     
+def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None, 
+                            cycles=5, chains=5, cores=1, seeds=None): 
+                            #adapt=False, tune_itv=50, chains=5, cores=1, seeds=None):
     if alphas is None:
         alphas = np.ones(H)
     else:
@@ -334,15 +129,92 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None, adapt=F
     if seeds is None:
         seeds = [None]*chains
     assert len(seeds) == chains
-    
-    latent_mult_mcmc_cgibbs.mcmc = lambda c, s: latent_mult_sample_cgibbs(lm_list, H, n_sample,
-                                                                          n_burnin, alphas,
-                                                                          adapt=adapt, tune_itv=tune_itv,
-                                                                          chain=c, seed=s) 
-        
+    assert n_burnin >= 200
+    # latent_mult_mcmc_cgibbs.mcmc = lambda c, s: latent_mult_sample_cgibbs(lm_list, H, n_sample,
+    #                                                                       n_burnin, alphas,
+    #                                                                       chain=c, seed=s) 
+
+    # find low ESS haplotypes  
+    latent_mult_mcmc_cgibbs.mcmc = lambda c, s: latent_mult_sample_cgibbs_alt(lm_list, H, 100,
+                                                                              n_burnin - 100, alphas, cycles,
+                                                                              chain=c, seed=s)         
     if cores==1:
-        outputs = [latent_mult_mcmc_cgibbs.mcmc(c, s) for c, s in zip(range(chains), seeds)]
-    
+        outputs_burnin = [latent_mult_mcmc_cgibbs.mcmc(c, s) for c, s in zip(range(chains), seeds)]    
+    else:        
+        reporter = find_reporter()
+        with multiprocessing.Pool(cores, register_reporter, [reporter]) as p:
+            outputs_burnin = p.starmap(latent_mult_cgibbs_chain, list(zip(range(chains), seeds)))
+            flush()
+
+    posterior = {'p': (('chain', 'draw', 'p_dim'),
+                       np.stack([output['trace_p'] for output in outputs_burnin]))}
+
+    ess = az.ess(xarray.Dataset(posterior))['p'].values
+    hsorted = np.argsort(ess)
+    n_add = 0
+
+    for lm in lm_list:
+        nz = len(lm.idx_var)
+        if nz == 0:
+            continue
+        amat = sympy.Matrix(np.vstack([np.ones(nz, int), lm.amat_var.astype(int)]))
+        cols = []
+        found = False
+        # start from haplotype with lowest ESS
+        for h in hsorted:
+            # look through haplotype list
+            for col, idx in enumerate(lm.idx_var):
+                if h == idx:
+                    cols.append(col)
+                    if len(cols) >= 3:
+                        # check nullspace
+                        nulls = amat[:,cols].nullspace()
+                        if nulls:
+                            # found valid basis vector
+                            found = True
+                            # scale basis vector to be integer
+                            vec = nulls[0]
+                            denoms = [x.q for x in vec if type(x) == sympy.Rational]
+                            if len(denoms) == 0:
+                                arr = np.array(vec, int)
+                            elif len(denoms) == 1:
+                                arr = np.array(vec*denoms[0], int)
+                            else:
+                                arr = np.array(vec*sympy.ilcm(*denoms), int)
+                            extra = np.zeros(nz, int)
+                            extra[cols] = arr.T[0]
+                            if extra.sum() != 0 or not (lm.amat_var.dot(extra) == 0).all():
+                                print(cols)
+                                print(amat[:,cols])
+                                print(arr.T)
+                                print(extra)
+                                print(lm.idx_var)
+                                print(lm.amat_var)
+                                print(lm.amat_var.dot(extra))
+                            assert extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()
+                            if {tuple(row) for row in lm.basis}.isdisjoint({tuple(extra), tuple(-extra)}):
+                                # vector not already in Markov basis
+                                n_add += 1
+                                lm.basis = np.vstack([lm.basis, extra])
+                    # haplotype column found
+                    break
+            if found:
+                # found valid basis vector, but may or may not already be in Markov basis
+                break
+    print(f'Added extra basis vector with low ESS haplotypes for {n_add} data points')
+
+    # set starting points
+    for idx, lm in enumerate(lm_list):
+        if not lm.idx_var:
+            continue
+        lm.inits = [output[f'trace_z{idx}'][-1] for output in outputs_burnin]
+
+    # inference run
+    latent_mult_mcmc_cgibbs.mcmc = lambda c, s: latent_mult_sample_cgibbs_alt(lm_list, H, n_sample, 0,
+                                                                              alphas, cycles,
+                                                                              chain=c, seed=s)         
+    if cores==1:
+        outputs = [latent_mult_mcmc_cgibbs.mcmc(c, s) for c, s in zip(range(chains), seeds)]    
     else:        
         reporter = find_reporter()
         with multiprocessing.Pool(cores, register_reporter, [reporter]) as p:
@@ -363,41 +235,150 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None, adapt=F
             posterior[key[6:]] = (dims, stacked)
         else:
             sample_stats[key] = (dims, stacked)
+    sample_stats['time_incl_tune'] = (('chain',), sample_stats['time_excl_tune'][1] +
+                                      np.array([output['time_incl_tune'] for output in outputs_burnin]))
 
     return az.InferenceData(posterior=xarray.Dataset(posterior),
                             sample_stats=xarray.Dataset(sample_stats))
+    
 
-def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
-                              adapt=False, tune_itv=50, chain=0, seed=None): 
+# def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
+#                               chain=0, seed=None): 
+#     t = time()
+    
+#     basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var]
+#     logfacts = gammaln(np.arange(1,max(lm_list[i].n_var for i in basis_is)+2))
+#     rng = np.random.default_rng(seed)
+#     random.seed(seed)
+
+#     zs = [lm_list[i].inits[chain] for i in basis_is]
+    
+#     post_alp = alphas.copy()
+#     for lm in lm_list:
+#         post_alp[lm.idx_fix] += lm.z_fix
+#     for z, i in zip(zs, basis_is):
+#         post_alp[lm_list[i].idx_var] += z
+#     # init p
+#     p0 = rng.dirichlet(post_alp)
+
+#     nz = len(basis_is)
+
+#     bsizes = [len(lm_list[i].basis) for i in basis_is]
+#     ncols = [len(lm_list[i].idx_var) for i in basis_is]
+    
+#     trace_p = []
+#     trace_zs = [[] for _ in basis_is]
+
+#     simul = 5
+#     thin = int(5*sum(lm_list[i].n_var for i in basis_is) / simul)
+
+#     acc = 0
+#     for i in atpbar(range(n_sample + n_burnin),
+#                     time_track=True,
+#                     name=f'chain {chain}'):
+#         if i == n_burnin:
+#             post_burnin = time()
+
+#         for t in range(thin):
+#             # update z
+#             idxs = random.sample(list(range(nz)), simul)
+#             step_rands = rng.random(simul)
+#             deltas = []
+#             delta_sum = np.zeros(H)
+#             logfact_sum = 0
+#             hratio = 0
+
+#             for rand, idx in zip(step_rands, idxs):
+#                 lm = lm_list[basis_is[idx]]
+#                 basis = lm.basis
+#                 nbors = np.vstack((zs[idx] - basis, zs[idx] + basis))
+#                 valid = np.where(np.all(nbors >= 0, axis=1))[0]
+
+#                 num = valid[int(valid.size*rand)]
+#                 delta = -basis[num] if num < bsizes[idx] else basis[num-bsizes[idx]]            
+#                 deltas.append(delta)
+#                 delta_sum[lm.idx_var] += delta
+
+#                 logfact_sum += logfacts[nbors[num]].sum()
+#                 hratio += math.log(valid.size / np.all(nbors + delta >= 0, axis=1).sum())
+
+#             lp_q0 = gammaln(post_alp).sum() - sum(logfacts[zs[idx]].sum() for idx in idxs)
+#             lp_q = gammaln(post_alp + delta_sum).sum() - logfact_sum
+#             if random.random() < np.exp(lp_q - lp_q0 + hratio):
+#                 for idx, delta in zip(idxs, deltas):
+#                     zs[idx] += delta
+#                 acc += 1
+#                 post_alp += delta_sum
+
+#         if i >= n_burnin:
+#             # update p
+#             p0 = rng.dirichlet(post_alp)
+#             trace_p.append(p0)
+
+#             for idx in range(nz):
+#                 trace_zs[idx].append(zs[idx].copy())
+
+#         if i % 100 == 99:
+#             # print(i+1, acc/100, file=sys.stderr)
+#             acc = 0
+
+#     output = {'trace_p': np.array(trace_p),
+#               'time_excl_tune': time()-post_burnin,
+#               'time_incl_tune': time()-t}
+#     output.update({f'trace_z{basis_is[idx]}': np.array(trace_zs[idx]) for idx in range(nz)})
+
+#     #print(sorted(Counter([tuple(arr) for arr in trace_zs[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
+#     #print(sorted(Counter([tuple(arr) for arr in acc_moves_arr[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
+
+#     return output
+
+
+def nbor_ps(z0, basis, a0, logfacts):
+    nbors = np.vstack((z0 - basis, z0 + basis))
+    nbors = nbors[np.all(nbors >= 0, axis=1)]
+    return nbors, logfacts[nbors].sum(axis=1)
+
+
+def latent_mult_sample_cgibbs_alt(lm_list, H, n_sample, n_burnin, alphas,
+                                  cycles=5, chain=0, seed=None): 
     t = time()
     
     basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var]
     logfacts = gammaln(np.arange(1,max(lm_list[i].n_var for i in basis_is)+2))
     rng = np.random.default_rng(seed)
-    random.seed(seed)
-    
-    basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var]
+
     zs = [lm_list[i].inits[chain] for i in basis_is]
-    
+    bsizes = [len(lm_list[i].basis) for i in basis_is]
+    psizes = np.array([lm_list[i].n_var for i in basis_is])
+    ncols = [len(lm_list[i].idx_var) for i in basis_is]
+
+    # sum latent counts
     post_alp = alphas.copy()
     for lm in lm_list:
         post_alp[lm.idx_fix] += lm.z_fix
     for z, i in zip(zs, basis_is):
         post_alp[lm_list[i].idx_var] += z
 
+    # initialise neighbour info
+    nbor_arr = [None for _ in basis_is]
+    nbps_arr = [None for _ in basis_is]
+    for idx, z in enumerate(zs):
+        j = basis_is[idx]
+        nbor_arr[idx], nbps_arr[idx] = nbor_ps(z, lm_list[j].basis,
+                                               post_alp[lm_list[j].idx_var] - z,
+                                               logfacts) 
+
+    # init p
+    p0 = rng.dirichlet(post_alp)
+
     nz = len(basis_is)
     idxs = list(range(nz))
-    n_sims_arr = 10*np.ones(nz, int)
-    max_step_arr = 1*np.ones(nz, int)
-    zacc_arr = np.zeros(nz, int)   
-    moves_arr = np.zeros(nz, int)
-    trg_moves = 10
-    bsizes = [len(lm_list[i].basis) for i in basis_is]
-    ncols = [len(lm_list[i].idx_var) for i in basis_is]
     
-    if adapt:
-        acc_moves_arr = [[] for _ in range(nz)]
-        tune_accs_arr = [0]*nz
+    trg_moves = cycles
+    n_sims = trg_moves*nz
+
+    zacc_arr = np.zeros(nz, int)
+    moves_arr = np.zeros(nz, int)
     
     trace_p = []
     trace_zs = [[] for _ in basis_is]
@@ -405,108 +386,48 @@ def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
                     time_track=True,
                     name=f'chain {chain}'):
         if i == n_burnin:
+            zacc_arr = np.zeros(nz, int)   
+            moves_arr = np.zeros(nz, int)
             post_burnin = time()
-        if i%tune_itv == 0 and 0 < i < n_burnin:            
-            # tune z
-            for idx in range(nz):
-                if moves_arr[idx]:
-                    max_step_arr[idx] = tune_max_step(max_step_arr[idx], zacc_arr[idx]/moves_arr[idx])
-                n_sims_arr[idx] = tune_n_sims(n_sims_arr[idx], moves_arr[idx]/tune_itv, trg_moves)
-                zacc_arr[idx] = 0
-                moves_arr[idx] = 0
-        
-        # update p
-        p0 = rng.dirichlet(post_alp)
 
-        # update z        
-        random.shuffle(idxs)
-        prob_prev = min(0.8, i/n_burnin - 0.2) if adapt else 0 # prob of using previous move as delta
+        # update z     
+        rand_idxs = [int(r*nz) for r in rng.random(size=n_sims)]
+        mh_rands = rng.random(size=n_sims)
+        delta_rands = np.log(-np.log(rng.random(size=(n_sims, 2*max(bsizes)))))
 
-        for idx in idxs:            
+        for idx, delta_rand, mh_rand in zip(rand_idxs, delta_rands, mh_rands): 
             j = basis_is[idx]
-            n_sims = n_sims_arr[idx]
+
+            a0 = post_alp[lm_list[j].idx_var] - zs[idx]
+            currp_arr = gammaln(a0 + nbor_arr[idx]).sum(axis=1) - nbps_arr[idx]
+            q = nbor_arr[idx][np.argmax(currp_arr - delta_rand[:len(currp_arr)])]
+
+            q_nbors, q_nbps = nbor_ps(q, lm_list[j].basis, a0, logfacts)
+            qp_arr = gammaln(a0 + q_nbors).sum(axis=1) - q_nbps
+            #accept = logsumexp(currp_arr) - logsumexp(qp_arr)
             
-            basis = lm_list[j].basis
-            bsize = bsizes[idx]
-            ncol = ncols[idx]
-            
-            q0 = zs[idx]
-            a0 = post_alp[lm_list[j].idx_var] - q0
-            lp_q0 = gammaln(a0 + q0).sum() - logfacts[q0].sum()
-            
-            # symmetric 
-            if lm_list[j].markov: 
-                deltas = []
-                for m in range(n_sims):
-                    rand = random.random()               
-                    if rand < prob_prev and tune_accs_arr[idx]:
-                        deltas.append(acc_moves_arr[idx][int(rand/prob_prev*tune_accs_arr[idx])])
-                    else:
-                        deltas.append(basis[int((1-rand)/(1-prob_prev)*bsize)])
-            else:
-                if bsize > 1:
-                    geo_denom = math.log(1 - max(0.2, 1/math.sqrt(bsize)))
-                deltas = []
-                for m in range(n_sims):
-                    rand = random.random()
-                    if rand < prob_prev and tune_accs_arr[idx]:
-                        deltas.append(acc_moves_arr[idx][int(rand/prob_prev*tune_accs_arr[idx])])
-                    else:
-                        sgn_dict = {}
-                        delta = np.zeros(ncol, int)
-                        repeats = 1 if bsize == 1 else int(math.log(random.random())/geo_denom) + 1
-                        for _ in range(repeats):
-                            bidx = int(random.random()*bsize)
-                            sgn = sgn_dict.get(bidx)
-                            if sgn is None:
-                                sgn = sgn_dict[bidx] = random.getrandbits(1)
-                            if sgn:
-                                delta += basis[bidx]
-                            else:
-                                delta -= basis[bidx]
-                            deltas.append(delta)
-                
-            step_rands = rng.random(size=n_sims)
-            mh_rands = np.log(rng.random(size=n_sims))
-            
-            for delta, step_rand, mh_rand in zip(deltas, step_rands, mh_rands):                
-                neg_step, pos_step = n_steps(q0, delta, max_step_arr[idx])                
-                tot_step = neg_step + pos_step
-                if tot_step == 0:
-                    continue                
-                
-                moves_arr[idx] += 1
-                rand_int = int(step_rand*tot_step)
-                if rand_int < neg_step:
-                    q = q0 - (rand_int+1)*delta
-                else:
-                    q = q0 + (tot_step-rand_int)*delta
-                
-                s1, s2 = n_steps(q, delta, max_step_arr[idx])
-                
-                lp_q = gammaln(a0 + q).sum() - logfacts[q].sum()
-                accept = lp_q - lp_q0 + np.log(tot_step / (s1+s2))
-                if mh_rand < accept:
-                    q0 = q
-                    zacc_arr[idx] += 1
-                    lp_q0 = lp_q  
-                    if 0.1 < i/n_burnin < 1 and adapt:
-                        tune_accs_arr[idx] += 1
-                        acc_moves_arr[idx].append(delta)
-                
-            zs[idx] = q0     
-            post_alp[lm_list[j].idx_var] = a0 + q0
+            currmax = max(currp_arr)
+            qmax = max(qp_arr)
+            accept = np.exp(currp_arr-currmax).sum()/np.exp(qp_arr-qmax).sum()*np.exp(currmax-qmax)
+
+            moves_arr[idx] += 1
+            if mh_rand < accept:     
+                zacc_arr[idx] += 1           
+                zs[idx] = q  
+                post_alp[lm_list[j].idx_var] = a0 + q
+                nbor_arr[idx] = q_nbors
+                nbps_arr[idx] = q_nbps
 
         if i >= n_burnin:
+            # update p
+            p0 = rng.dirichlet(post_alp)
             trace_p.append(p0)
+
             for idx in range(nz):
                 trace_zs[idx].append(zs[idx])
 
     output = {'trace_p': np.array(trace_p),
-              'n_sims': n_sims_arr,
-              'max_step': max_step_arr,
               'zacc_rate': zacc_arr/moves_arr,
-              'moves_avg': moves_arr/n_sample,
               'time_excl_tune': time()-post_burnin,
               'time_incl_tune': time()-t}
     output.update({f'trace_z{basis_is[idx]}': np.array(trace_zs[idx]) for idx in range(nz)})
@@ -523,16 +444,12 @@ class MBasisMetropolis(pm.step_methods.metropolis.Metropolis):
     name = "markov basis metropolis"
     default_blocked = False
     generates_stats = True
-    stats_dtypes = [{"moves": int,
-                     "accepted": int,
-                     "max_step": int,
-                     "n_sims": int,
+    stats_dtypes = [{"acc_rate": float,
                      #"time_a": float,
                      #"time_b": float,
                      #"time_c": float,
                     }]
 
-    # same initial values as pm.step_methods.metropolis.Metropolis except S
     def __init__(self, vars, shared, proposal_dist,                 
                  n_sims=10, max_step=1, trg_moves=10,
                  tune=True, tune_interval=50, model=None,
@@ -788,12 +705,12 @@ def tune_scale(scale, acc_rate):
 
     Rate    Variance adaptation
     ----    -------------------
-    <0.001        x 0.1
-    <0.05         x 0.5
-    <0.2          x 0.9
-    >0.5          x 1.1
-    >0.75         x 2
-    >0.95         x 10
+    <0.01        x 0.1
+    <0.1         x 0.5
+    <0.3         x 0.9
+    >0.6         x 1.1
+    >0.8         x 2
+    >0.95        x 10
     
     Parameters
     ----------
@@ -807,17 +724,17 @@ def tune_scale(scale, acc_rate):
     float
         Adjusted proposal scale.
     """
-    if acc_rate < 0.001:
+    if acc_rate < 0.01:
         return scale * 0.1
-    elif acc_rate < 0.05:
+    elif acc_rate < 0.1:
         return scale * 0.5
-    elif acc_rate < 0.2:
+    elif acc_rate < 0.3:
         return scale * 0.9
     elif acc_rate > 0.95:
         return scale * 10.0
-    elif acc_rate > 0.75:
+    elif acc_rate > 0.8:
         return scale * 2.0
-    elif acc_rate > 0.5:
+    elif acc_rate > 0.6:
         return scale * 1.1
     return scale
     
@@ -828,11 +745,11 @@ def tune_max_step(max_step, acc_rate):
 
     Rate    Variance adaptation
     ----    -------------------
-    <0.02         x 0.1
-    <0.1          x 0.5
-    <0.4          x 0.8
-    >0.6          x 1.2
-    >0.8          x 2
+    <0.001        x 0.1
+    <0.05         x 0.5
+    <0.2          x 0.9
+    >0.5          x 1.1
+    >0.75         x 2
     >0.95         x 10
 
     Parameters
@@ -847,34 +764,25 @@ def tune_max_step(max_step, acc_rate):
     int
         Adjusted maximum step size, rounded to an integer.
     """
-    if acc_rate < 0.02:
+    if acc_rate < 0.001:
         max_step_float = max_step * 0.1
-    elif acc_rate < 0.1:
+    elif acc_rate < 0.05:
         max_step_float = max_step * 0.5
-    elif acc_rate < 0.4:
+    elif acc_rate < 0.2:
         max_step_float = max_step * 0.8
     elif acc_rate > 0.95:
         max_step_float = max_step * 10.0
-    elif acc_rate > 0.8:
+    elif acc_rate > 0.75:
         max_step_float = max_step * 2.0
-    elif acc_rate > 0.6:
+    elif acc_rate > 0.5:
         max_step_float = max_step * 1.2
     else:
         max_step_float = max_step
     return max(1, int(round(max_step_float)))
 
 def tune_n_sims(n_sims, avg_moves, trg_moves):
-    """TODO"""
-    factor = 1
-    if avg_moves < trg_moves * 0.1:
-        factor = 5
-    elif avg_moves < trg_moves * 0.2:
-        factor = 2
-    elif avg_moves < trg_moves * 0.5:
-        factor = 1.5
-    elif avg_moves > trg_moves * 1.5:
-        factor = 0.8            
-    return max(1, min(round(factor*n_sims), 500))
+    """TODO"""           
+    return max(1, round(trg_moves/avg_moves*n_sims))
     
     
 

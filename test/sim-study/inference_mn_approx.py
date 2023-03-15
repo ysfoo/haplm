@@ -4,7 +4,8 @@ import pulp
 from time import time
 import os
 
-from haplm.lm_dist import LatentMult, find_4ti2_prefix, mat_by_marker
+from haplm.lm_dist import LatentMult, find_4ti2_prefix
+from haplm.hap_utils import mat_by_marker
 from haplm.lm_inference import latent_mult_mcmc
 from sim_data import gen_sim_data, parse_sim_data
 
@@ -17,7 +18,7 @@ n_datasets = 5
 n_pools = 20
 n_markers = 3
 H = 2**n_markers # number of haplotypes
-pool_sizes = np.arange(10, 31, 5)
+pool_sizes = np.arange(20, 101, 20)
 alphas = np.ones(H)*0.4
 
 amat = mat_by_marker(n_markers)
@@ -25,8 +26,8 @@ amat = mat_by_marker(n_markers)
 # MCMC parameters
 cores = 5
 chains = 5
-n_burnin = 1000
-n_sample = 5000
+n_burnin = 500
+n_sample = 500
 
 for pool_size in pool_sizes:
 	print(f'Pool size = {pool_size}')
@@ -44,15 +45,16 @@ for pool_size in pool_sizes:
 		lm_list = []
 		t = time()
 		for n, y in zip(ns, ys):			
-			lm = LatentMult(amat, y, n, '../../4ti2-files/sim-study-markov',
-				            solver, prefix_4ti2, merge=False, walk_len=500, num_pts=5)
+			lm = LatentMult(amat, y, n, '../../4ti2-files/sim-study-mn',
+				            solver, prefix_4ti2)
 			lm_list.append(lm)
 		pre_time = time() - t
 
 		print(f'MCMC for set {ds_idx}')
 		t = time()
 		idata = latent_mult_mcmc(lm_list, H, n_sample, n_burnin, ['mn_approx']*n_pools,
-			                           chains=chains, cores=cores, seeds=range(chains))
+			                     chains=chains, cores=cores,
+			                     seeds=np.arange(chains) + (ds_idx ^ pool_size)*chains)
 		mcmc_time = time() - t
 
 		idata.sample_stats.attrs['preprocess_time'] = pre_time

@@ -166,16 +166,6 @@ def latent_mult_numpyro(lm_list, H, n_sample, n_burnin, methods,
         for i in mn_is:
             y = numpyro.sample(f"y{i}", LatentMultApprox(p, lm_list[i]), obs=0)
 
-    init_params = {'p': np.array([[ 0.67209788, -1.27644349, -0.586147  , -0.83526959, -0.1048815 ,
-        -0.2783102 , -1.40875898, -0.91440598, -0.23010959, -1.1190687 ,
-        -0.39892894, -0.83933182, -0.72252926, -0.19321207,  0.01155312,
-        -0.97345807, -0.56902998, -0.96331009, -2.43828623, -3.09441413],
-       [ 0.61905882, -0.06330212, -0.4054274 ,  0.44499318, -0.918209  ,
-        -0.30950148, -0.9425902 , -0.17182082, -0.23839467, -0.45361365,
-         0.16995366, -1.21054211, -1.22248495, -0.58971128, -1.32232542,
-        -1.27809393, -0.09785872, -1.26876998, -0.04418781, -0.73438138]])}
-
-    # print(numpyro.infer.util.potential_energy(model, (), {}, {'p': init_params['p'][0]}))
     nuts_kernel = NUTS(model,
                        target_accept_prob=0.9,)
                        #init_strategy=numpyro.infer.init_to_median)
@@ -190,9 +180,7 @@ def latent_mult_numpyro(lm_list, H, n_sample, n_burnin, methods,
                 "mean_accept_prob",
                 "diverging",
             ),
-    )
-
-    
+    )    
 
     idata = az.from_numpyro(mcmc)
 

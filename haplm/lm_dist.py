@@ -1,9 +1,10 @@
 import numpy as np
 import math
-import random
+# import random
 import pulp
 import sympy
 
+from pymc.distributions.dist_math import logpow
 from scipy.special import loggamma
 import scipy.linalg
 
@@ -13,12 +14,15 @@ import os
 import shutil
 import subprocess as sp
 import multiprocessing
-import aesara
-import aesara.tensor as at
+import pytensor
+import pytensor.tensor as pt
 import signal
+import jax.numpy as jnp
+import jax.scipy as jsp
 
 from haplm.hap_utils import encode_amat
 
+rng = np.random.default_rng(0)
 
 def find_4ti2_prefix():
     if shutil.which('markov') is not None:
@@ -32,7 +36,7 @@ def find_4ti2_prefix():
 class LatentMult():
     """Stores data relevant to a latent multinomial observation."""    
     def __init__(self, amat, y, n, basis_fname=None, pulp_solver=None, prefix_4ti2=None,
-                 enum_sols=False, find_bounds=True, walk_len=500, num_pts=0, logfacts=None, timeout=None):
+                 enum_sols=False, find_bounds=True, walk_len=500, num_pts=0, timeout=None):
         """
         Initialises the `LatentMult` object. For pre-processing details see `prep_amat`.
         
@@ -55,11 +59,9 @@ class LatentMult():
         find_bounds : bool
             Whether to find bounds to all latent counts,  defaults to True. Setting to False runs much faster, but the only latent counts that can be uniquely determined are those that are zero, and are associated with an observed count of zero.
         walk_len : int
-            Number of iterations for random walk, defaults to 1000.
+            Number of iterations for random walk, defaults to 500.
         num_pts : int
             Number of MCMC initialisation points for latent count vectors, defaults to 0.
-        logfacts : 1D-array
-            Array of log factorials of numbers from 0 to n. Will be computed during initialisation if None (default).
         """
         self.amat = np.array(amat)
         self.y = np.array(y)
@@ -68,14 +70,14 @@ class LatentMult():
         self.pulp_solver = pulp_solver
         self.prefix_4ti2 = prefix_4ti2
         
-        self.logfacts = loggamma(np.arange(1,n+2)) if logfacts is None else logfacts
+        # self.logfacts = loggamma(np.arange(1,n+2)) if logfacts is None else logfacts
         
         # pre-process
         self.prep_amat(enum_sols, find_bounds, walk_len, num_pts, timeout)
         
         # constants for logp
-        self.logbinom_fix = self.logfacts[self.n] - self.logfacts[list(self.z_fix)].sum()
-        self.logbinom_fix_nvar = self.logbinom_fix - self.logfacts[self.n_var]
+        # self.logbinom_fix = self.logfacts[self.n] - self.logfacts[list(self.z_fix)].sum()
+        # self.logbinom_fix_nvar = self.logbinom_fix - self.logfacts[self.n_var]
         
     def compute_basis(self, markov=False):
         """Computes integer basis of pre-processed configuration matrix.
@@ -120,7 +122,12 @@ class LatentMult():
         else:
             self.sols_var = zsolve(amat, y, self.mins, self.maxs)
 
-        
+        if self.sols_var is None:
+            self.sols = None
+        else:
+            self.sols = np.zeros((len(self.sols_var), self.amat.shape[1]), int)
+            self.sols[:,self.idx_fix] = self.z_fix
+            self.sols[:,self.idx_var] = self.sols_var
 
     def enum_sols_4ti2(self, fn, timeout=None):
         """
@@ -144,7 +151,7 @@ class LatentMult():
                                     np.array([self.n_var] + list(self.y_var)),
                                     fn, self.prefix_4ti2, timeout) if amat.shape[1] else None
         
-    def loglike_exact(self, p):
+    def loglike_exact(self, p, logfacts):
         """
         TODO: Aesara instead
         Computes log p(y|p) exactly using marginalisation.
@@ -159,35 +166,75 @@ class LatentMult():
         Aesara ...
             Log-likelihood p(y|p).
         """           
-        if not self.idx_var: # all counts can be uniquely determined
-            return at.dot(self.z_fix, at.log(p))
-        
         if not self.amat_var.size: # no info on counts that cannot be uniquely determined
-            return at.dot(self.z_fix, at.log(p[self.idx_fix])) + self.n_var*at.log(at.sum(p[self.idx_var]))
-            
-        return (at.dot(self.z_fix, at.log(p[self.idx_fix]))
-                + at.logsumexp((self.sols_var*at.log(p[self.idx_var])-self.logfacts[self.sols_var]).sum(axis=-1)))
+            return pt.sum(logpow(p[self.idx_fix], self.z_fix)) + logpow(pt.sum(p[self.idx_var]), self.n_var)
+
+        return pt.logsumexp((logpow(p, self.sols)-logfacts[self.sols]).sum(axis=-1))
+
+
+    def loglike_exact_jax(self, p, logfacts):
+        """
+        Computes log p(y|p) exactly using marginalisation.
+        
+        Parameters
+        ----------
+        p : 1D-array
+            Multinomial probabilities.
+        
+        Returns
+        -------
+        Aesara ...
+            Log-likelihood p(y|p).
+        """            
+        if not self.amat_var.size: # no info on counts that cannot be uniquely determined
+            return jnp.sum(jsp.special.xlogy(self.z_fix, p[self.idx_fix])) + jsp.special.xlogy(self.n_var, jnp.sum(p[self.idx_var]))
+
+        return jsp.special.logsumexp((jsp.special.xlogy(self.sols, p)-logfacts[self.sols]).sum(axis=-1))
     
+
     def loglike_mn(self, p, mn_stab=1e-9):            
-        if not self.idx_var: # all counts can be uniquely determined
-            return at.dot(self.z_fix, at.log(p))
+        if not self.idx_var.size: # all counts can be uniquely determined
+            return pt.dot(self.z_fix, pt.log(p))
         
-        qsum = at.sum(p[self.idx_var])
+        qsum = pt.sum(p[self.idx_var])
         
         if not self.amat_var.size: # no info on counts that cannot be uniquely determined
-            return at.dot(self.z_fix, at.log(p[self.idx_fix])) + self.n_var*at.log(qsum)
+            return pt.dot(self.z_fix, pt.log(p[self.idx_fix])) + self.n_var*pt.log(qsum)
         
         q = p[self.idx_var]/qsum
 
         delta = self.y_var - self.amat_var @ (self.n_var*q) # observed - mean
-        aq = at.dot(self.amat_var, q)
-        chol = at.slinalg.cholesky(self.n_var*(at.dot(self.amat_var*q, self.amat_var.T)
-                                               - at.outer(aq, aq) + np.eye(len(self.y_var))*mn_stab))
-        chol_inv_delta = at.slinalg.solve_triangular(chol, delta, lower=True)
-        quadform = at.dot(chol_inv_delta, chol_inv_delta)
-        logdet = at.sum(at.log(at.diag(chol)))
+        aq = pt.dot(self.amat_var, q)
+        chol = pt.slinalg.cholesky(self.n_var*(pt.dot(self.amat_var*q, self.amat_var.T)
+                                               - pt.outer(aq, aq) + np.eye(len(self.y_var))*mn_stab))
+        chol_inv_delta = pt.slinalg.solve_triangular(chol, delta, lower=True)
+        quadform = pt.dot(chol_inv_delta, chol_inv_delta)
+        logdet = pt.sum(pt.log(pt.diag(chol)))
 
-        return at.dot(self.z_fix, at.log(p[self.idx_fix])) + self.n_var*at.log(qsum) - 0.5*quadform - logdet
+        return pt.dot(self.z_fix, pt.log(p[self.idx_fix])) + self.n_var*pt.log(qsum) - 0.5*quadform - logdet
+
+
+    def loglike_mn_jax(self, p, mn_stab=1e-9):            
+        if not self.idx_var.size: # all counts can be uniquely determined
+            return jnp.dot(self.z_fix, jnp.log(p))
+        
+        qsum = jnp.sum(p[self.idx_var])
+        
+        if not self.amat_var.size: # no info on counts that cannot be uniquely determined
+            return jnp.dot(self.z_fix, jnp.log(p[self.idx_fix])) + self.n_var*jnp.log(qsum)
+        
+        q = p[self.idx_var]/qsum
+
+        aq = jnp.dot(self.amat_var, q)
+        delta = self.y_var - self.n_var*aq # observed - mean
+        chol = jsp.linalg.cholesky(self.n_var*(jnp.dot(self.amat_var*q, self.amat_var.T)
+                                               - jnp.outer(aq, aq) + jnp.eye(len(self.y_var))*mn_stab),
+                                   lower=True)
+        chol_inv_delta = jsp.linalg.solve_triangular(chol, delta, lower=True)
+        quadform = jnp.dot(chol_inv_delta, chol_inv_delta)
+        logdet = jnp.sum(jnp.log(jnp.diag(chol)))
+
+        return jnp.dot(self.z_fix, jnp.log(p[self.idx_fix])) + self.n_var*jnp.log(qsum) - 0.5*quadform - logdet
 
 
     def prep_amat(self, enum_sols, find_bounds=True,
@@ -212,7 +259,7 @@ class LatentMult():
         Returns
         -------
         None
-        """    
+        """
         n = self.n
         # add row of ones
         amat = np.vstack([np.ones(len(self.amat[0]), int), self.amat]).astype(int)
@@ -220,7 +267,6 @@ class LatentMult():
         
         # column indices corresponding to variable latent counts
         r, h = amat.shape
-        inits = np.zeros((num_pts, h), int)
           
         mins = np.zeros(h, int)
         maxs = np.array([min(y[row] if amat[row,col] else y[0]-y[row]
@@ -255,41 +301,42 @@ class LatentMult():
             else:
                 save = walk_len
                 
-            if bsize > 1:
-                geo_denom = math.log(1 - max(0.2, 1/math.sqrt(bsize)))
+            # if bsize > 1:
+            #     geo_denom = math.log(1 - max(0.2, 1/math.sqrt(bsize)))
             for i in range(walk_len):
-                step = np.zeros(hnz, int)            
-                sgn_dict = {}
-                repeats = 1 if bsize == 1 else int(math.log(random.random())/geo_denom) + 1
-                for _ in range(repeats):
-                    bidx = int(random.random()*bsize)
-                    sgn = sgn_dict.get(bidx)
-                    if sgn is None:
-                        sgn = sgn_dict[bidx] = random.getrandbits(1)
-                    if sgn:
-                        step += basis[bidx]
-                    else:
-                        step -= basis[bidx]
+                step = rng.choice(basis)
+                # step = np.zeros(hnz, int)            
+                # sgn_dict = {}
+                # repeats = 1 if bsize == 1 else int(math.log(random.random())/geo_denom) + 1
+                # for _ in range(repeats):
+                #     bidx = int(random.random()*bsize)
+                #     sgn = sgn_dict.get(bidx)
+                #     if sgn is None:
+                #         sgn = sgn_dict[bidx] = random.getrandbits(1)
+                #     if sgn:
+                #         step += basis[bidx]
+                #     else:
+                #         step -= basis[bidx]
                 
                 pos_mask = step > 0
                 neg_mask = step < 0
                 lb = np.min(subsol[pos_mask]//step[pos_mask], initial=y[0])
                 ub = np.min(subsol[neg_mask]//(-step[neg_mask]), initial=y[0])
-                subsol = subsol + step*np.random.randint(-lb, ub+1)
+                subsol = subsol + step*rng.integers(-lb, ub+1)
                 sol[pmask] = subsol
                 assert np.all(subsol >= 0)
                 
                 if i == save:
-                    inits.append(sol)
+                    inits.append(sol.copy())
                     save += walk_len // num_pts
                 mins = np.minimum(mins, sol)
                 maxs = np.maximum(maxs, sol)
                 
-            if inits:
-                inits = np.array(inits)
-            else:
-                inits = np.zeros((num_pts, h))
-            assert len(inits) == num_pts
+        if inits:
+            inits = np.array(inits)
+        else:
+            inits = np.zeros((num_pts, 0))
+        assert len(inits) == num_pts
             
         if find_bounds and hnz:
             # check which latent counts cannot be uniquely determined
@@ -308,7 +355,7 @@ class LatentMult():
         var_js = [j for j, mask in enumerate(pmask) if mask]
         y = y - amat[:,~pmask]@mins[~pmask] # remove contribution from fix latent counts
         amat = amat[:,pmask]
-        inits = inits[:,pmask]
+        # inits = inits[:,pmask]
 
         # see if any rows are redundant
         _, inds = sympy.Matrix(amat).T.rref()
@@ -325,7 +372,11 @@ class LatentMult():
             var_js = []
             y = np.array([])
             amat = np.zeros((0,0), int)
-            inits = [[] for _ in range(num_pts)]
+        
+        if not var_js:
+            assert len(fix_js) == h
+            init = np.array(fix_vals)[np.argsort(fix_js)]
+            inits = np.array([init for _ in range(num_pts)])
 
         assert np.sum(1-amat[:1]) == 0 # first row are ones
         assert amat.shape[1] == len(var_js)
@@ -334,15 +385,17 @@ class LatentMult():
         self.amat_var = amat[1:].astype(float)
         self.n_var = y[0] if len(y)>0 else 0
         self.y_var = y[1:]
-        self.idx_var = var_js
+        self.idx_var = np.array(var_js, int)
         self.z_fix = np.array(fix_vals, int)
-        self.idx_fix = fix_js
-        self.inits = inits
+        self.idx_fix = np.array(fix_js, int)
+        self.inits = np.array(inits, int)
         self.mins = mins[pmask]
         self.maxs = maxs[pmask]
 
         if enum_sols:
             self.enum_sols(timeout)
+        else:
+            self.sols = []
 
 
 mb_dict = {} # cache for calls to markov
@@ -492,7 +545,7 @@ def optim(amat, y, idx, sense, pulp_solver):
     return pulp.value(prob.objective)
 
 
-def zsolve(amat, y, mins=None, maxs=None, cap=int(1e6)):
+def zsolve(amat, y, mins=None, maxs=None, cap=int(1e7)):
     assert set(list(amat.flatten())).issubset({0,1})
     assert set(amat[0]) == {1}
     

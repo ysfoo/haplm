@@ -1,5 +1,5 @@
 import numpy as np
-import aesara
+import pytensor
 import pulp
 from haplm.hippo_aeml import run_AEML
 
@@ -38,7 +38,7 @@ def decode_amat(code):
         Decoded binary matrix.
     """
     return np.transpose([np.fromstring(' '.join(np.binary_repr(num).zfill(code[0])), sep=' ', dtype=int)
-                         for num in code[1:]]).astype(aesara.config.floatX)
+                         for num in code[1:]]).astype(pytensor.config.floatX)
 
 def mat_by_marker(G):
     """

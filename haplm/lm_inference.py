@@ -9,7 +9,6 @@ import math
 from time import time
 import xarray
 
-from typing import Any, Callable, Dict, List, Tuple
 import pymc as pm
 from pymc.distributions.dist_math import check_parameters, factln, logpow
 from pymc.blocking import RaveledVars
@@ -17,14 +16,33 @@ from pymc.math import logdet
 from pymc.step_methods.arraystep import metrop_select, ArrayStepShared
 from pymc.step_methods.metropolis import delta_logp
 import arviz as az
-import aesara
-from aesara.tensor.random.op import RandomVariable, default_supp_shape_from_params
-import aesara.tensor as at
-from aesara.graph.basic import vars_between
+from arviz.data.base import make_attrs
+from pymc.backends.arviz import find_constants, find_observations
+
+import pytensor
+from pytensor.tensor.random.op import RandomVariable, default_supp_shape_from_params
+import pytensor.tensor as pt
+from pytensor.graph import Apply, Op
+from pytensor.link.jax.dispatch import jax_funcify
+
+import jax
+import jax.numpy as jnp
+import jax.scipy as jsp
+
+import numpyro
+import numpyro.distributions as dist
+from numpyro.infer import MCMC, HMC, NUTS, HMCGibbs
+from numpyro.infer.hmc import hmc
+from numpyro.infer.hmc_gibbs import HMCGibbsState
+
+from datetime import datetime
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+import sys
+import copy
 
 from atpbar import atpbar, register_reporter, find_reporter, flush
 import multiprocessing
-import sys
 
 
 def latent_mult_chain(c, s):
@@ -33,33 +51,172 @@ def latent_mult_chain(c, s):
 def latent_mult_cgibbs_chain(c, s):
     return latent_mult_mcmc_cgibbs.mcmc(c, s)
 
+
+class UniformDirichlet(dist.Distribution):
+    support = dist.constraints.simplex
+
+    def __init__(self, size):
+        if isinstance(size, int):
+            size = (size,)
+        self.concentration = jnp.ones(size)
+        super().__init__(batch_shape=size[:-1], event_shape=size[-1:])
+
+    def sample(self, key, sample_shape=()):
+        assert dist.util.is_prng_key(key)
+        shape = sample_shape + self.batch_shape
+        samples = jax.random.dirichlet(key, self.concentration, shape=shape)
+        return jnp.clip(
+            samples, a_min=jnp.finfo(samples).tiny, a_max=1 - jnp.finfo(samples).eps
+        )
+
+    def log_prob(self, value):
+        return 0
+
+
+class LatentMultApprox(dist.Distribution):
+    support = dist.constraints.nonnegative_integer
+
+    def __init__(self, p, lm, mn_stab=1e-9):
+        self.p = p
+        self.all_unique = lm.idx_var.size == 0
+        self.no_info = lm.amat_var.size == 0
+        self.idx_var = jnp.array(lm.idx_var)
+        self.idx_fix = jnp.array(lm.idx_fix)
+        self.z_fix = jnp.array(lm.z_fix)
+        self.amat_var = jnp.array(lm.amat_var)
+        self.n_var = lm.n_var
+        self.y_var = jnp.array(lm.y_var)
+        self.mn_stab = mn_stab
+        super().__init__(batch_shape=(len(lm.y),), event_shape=())
+
+    def sample(self, key, sample_shape=()):
+        raise NotImplementedError
+
+    def log_prob(self, value):
+        # return self.lm.loglike_mn_jax(self.p, self.mn_stab)
+        if self.all_unique: # all counts can be uniquely determined
+            return jnp.sum(jsp.special.xlogy(self.z_fix, self.p))
+
+        qsum = jnp.sum(self.p[self.idx_var])
+
+        if self.no_info: # no info on counts that cannot be uniquely determined
+            return (jnp.sum(jsp.special.xlogy(self.z_fix, self.p[self.idx_fix]))
+                    + jsp.special.xlogy(self.n_var, qsum))
+
+        q = self.p[self.idx_var]/qsum
+        aq = jnp.dot(self.amat_var, q)
+        delta = self.y_var - self.n_var*aq # observed - mean
+        chol = jsp.linalg.cholesky(self.n_var*(jnp.dot(self.amat_var*q, self.amat_var.T) 
+                                   - jnp.outer(aq, aq) + jnp.eye(len(self.y_var))*self.mn_stab),
+                                   lower=True)
+        chol_inv_delta = jsp.linalg.solve_triangular(chol, delta, lower=True)
+        quadform = jnp.dot(chol_inv_delta, chol_inv_delta)
+        logdet = jnp.sum(jnp.log(jnp.diag(chol)))
+
+        log_prob = (jnp.sum(jsp.special.xlogy(self.z_fix, self.p[self.idx_fix]))
+                    + jsp.special.xlogy(self.n_var, qsum) - 0.5*quadform - logdet)
+
+        # jax.debug.print('{lp} {q} {ld} {pmin}',
+        #                 lp=log_prob, q=quadform, ld=logdet, pmin=jnp.min(self.p))
+
+        return log_prob
+
+
+class LatentMultExact(dist.Distribution):
+    support = dist.constraints.nonnegative_integer
+
+    def __init__(self, p, lm):
+        self.p = p
+        self.no_info = lm.amat_var.size == 0
+        self.idx_var = jnp.array(lm.idx_var)
+        self.idx_fix = jnp.array(lm.idx_fix)
+        self.z_fix = jnp.array(lm.z_fix)
+        self.n_var = lm.n_var
+        self.sols = jnp.array(lm.sols)
+        self.logfacts = jsp.special.gammaln(jnp.arange(1, lm.n_var + 2))
+        super().__init__(batch_shape=(len(lm.y),), event_shape=())
+
+    def sample(self, key, sample_shape=()):
+        raise NotImplementedError
+
+    def log_prob(self, value):
+        if self.no_info: # no info on counts that cannot be uniquely determined
+            return (jnp.sum(jsp.special.xlogy(self.z_fix, self.p[self.idx_fix]))
+                    + jsp.special.xlogy(self.n_var, jnp.sum(self.p[self.idx_var])))
+
+        return jsp.special.logsumexp((jsp.special.xlogy(self.sols, self.p)-self.logfacts[self.sols]).sum(axis=-1))
+
+
+def latent_mult_numpyro(lm_list, H, n_sample, n_burnin, methods,
+                        p_dist, chains=5, cores=1, seed=None):  
+    # check if no need for approximation nor discrete sampling
+    for i, lm in enumerate(lm_list):
+        if not lm.idx_var.size or not lm.amat_var.size:
+            methods[i] = 'exact'
+
+    exact_is = [i for i, method in enumerate(methods) if method=='exact']
+    basis_is = [i for i, method in enumerate(methods) if method=='basis']
+    mn_is = [i for i, method in enumerate(methods) if method=='mn_approx']
+    assert len(exact_is)+len(basis_is)+len(mn_is) == len(lm_list)
+
+    def model():
+        p = numpyro.sample('p', p_dist)
+        for i in exact_is:
+            y = numpyro.sample(f"y{i}", LatentMultExact(p, lm_list[i]), obs=0)
+        for i in mn_is:
+            y = numpyro.sample(f"y{i}", LatentMultApprox(p, lm_list[i]), obs=0)
+
+    init_params = {'p': np.array([[ 0.67209788, -1.27644349, -0.586147  , -0.83526959, -0.1048815 ,
+        -0.2783102 , -1.40875898, -0.91440598, -0.23010959, -1.1190687 ,
+        -0.39892894, -0.83933182, -0.72252926, -0.19321207,  0.01155312,
+        -0.97345807, -0.56902998, -0.96331009, -2.43828623, -3.09441413],
+       [ 0.61905882, -0.06330212, -0.4054274 ,  0.44499318, -0.918209  ,
+        -0.30950148, -0.9425902 , -0.17182082, -0.23839467, -0.45361365,
+         0.16995366, -1.21054211, -1.22248495, -0.58971128, -1.32232542,
+        -1.27809393, -0.09785872, -1.26876998, -0.04418781, -0.73438138]])}
+
+    # print(numpyro.infer.util.potential_energy(model, (), {}, {'p': init_params['p'][0]}))
+    nuts_kernel = NUTS(model,
+                       target_accept_prob=0.9,)
+                       #init_strategy=numpyro.infer.init_to_median)
+    print(numpyro.infer.util._get_model_transforms(model))
+    mcmc = MCMC(nuts_kernel, num_warmup=n_burnin, num_samples=n_sample, num_chains=chains)
+    mcmc.run(jax.random.PRNGKey(seed), init_params=init_params, extra_fields=(
+                "num_steps",
+                "potential_energy",
+                "energy",
+                "adapt_state.step_size",
+                "accept_prob",
+                "mean_accept_prob",
+                "diverging",
+            ),
+    )
+
+    
+
+    idata = az.from_numpyro(mcmc)
+
+    return mcmc, idata
+
+
 def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
                      logprior_func=None,
-                     chains=5, cores=1, seeds=None):   
+                     chains=5, cores=1, seed=None):   
     if logprior_func is None:
-        logprior_func = lambda p: 0 # at.as_tensor_variable(0)
+        logprior_func = lambda p: 0 # pt.as_tensor_variable(0)
     
-    if seeds is None:
-        seeds = [None]*chains
-    else:
-        seeds = list(seeds)
-    assert len(seeds) == chains
+    if logprior_func is None:
+        logprior_func = lambda p: 0 # pt.as_tensor_variable(0)
     
     # check if no need for approximation nor discrete sampling
     for i, lm in enumerate(lm_list):
-        if not lm.idx_var or not lm.amat_var.size:
+        if not lm.idx_var.size or not lm.amat_var.size:
             methods[i] = 'exact'
     
     exact_is = [i for i, method in enumerate(methods) if method=='exact']
     basis_is = [i for i, method in enumerate(methods) if method=='basis']
     mn_is = [i for i, method in enumerate(methods) if method=='mn_approx']
     assert len(exact_is)+len(basis_is)+len(mn_is) == len(lm_list)
-
-    def make_logp(lm, method):
-        if method == 'exact':
-            return lambda z, p: lm.loglike_exact(p)
-        elif method == 'mn_approx':
-            return lambda z, p: lm.loglike_mn(p)
 
     class CustomRV(RandomVariable):
         name = "custom"
@@ -81,29 +238,50 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
             return super().dist([param], **kwargs)
 
         def moment(rv, size, param):
-            return at.ones(H)/H
+            return pt.ones(H)/H
 
         def logp(value, param):
             return logprior_func(value)
 
+    logfacts = scipy.special.gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2))
+    logp = lambda p: (sum(lm_list[i].loglike_mn_jax(p) for i in mn_is)
+                      + sum(lm_list[i].loglike_exact_jax(p, logfacts) for i in exact_is))
+    val_and_grad = jax.value_and_grad(logp)
+    class LogpOp(Op):
+        default_output = 0
+
+        def make_node(self, *inputs):
+            inputs = [pt.as_tensor_variable(inputs[0])]
+            outputs = [pt.dscalar()] + [inp.type() for inp in inputs]
+            return Apply(self, inputs, outputs)
+
+        def perform(self, node, inputs, outputs):
+            result, grad = val_and_grad(inputs[0])
+            outputs[0][0] = np.asarray(result, dtype=node.outputs[0].dtype)
+            outputs[1][0] = np.asarray(grad, dtype=node.outputs[1].dtype)
+
+        def grad(self, inputs, output_gradients):
+            value = self(*inputs)
+            gradients = value.owner.outputs[1:]
+            assert all(
+                isinstance(g.type, pytensor.gradient.DisconnectedType) for g in output_gradients[1:]
+            )
+            return [output_gradients[0] * grad for grad in gradients]
+
+    logp_op = LogpOp()
+
+    @jax_funcify.register(LogpOp)
+    def logp_dispatch(op, **kwargs):
+        return val_and_grad
+
+    # logp = lambda p: (sum(lm_list[i].loglike_mn(p) for i in mn_is)
+    #                   + sum(lm_list[i].loglike_exact(p, logfacts) for i in exact_is))
+
     with pm.Model() as model:
         #p = pm.Dirichlet('p', np.ones(H))
         p = Custom('p', np.ones(H), shape=(H,))
-        #ys_mn = pm.Potential('ys_mn', lm_list[0].loglike_exact(p))
-
-        if mn_is:
-            ys_mn = pm.Potential('ys_mn', sum(lm_list[i].loglike_mn(p) for i in mn_is))
-        if exact_is:
-            ys_exact = pm.Potential('ys_exact', sum(lm_list[i].loglike_exact(p) for i in exact_is))
-        
-        # ys_mn = [pm.DensityDist('y'+str(i), p,
-        #                         logp=make_logp(lm_list[i], 'mn_approx'),
-        #                         observed=np.zeros(1), dtype='int64')
-        #          for i in mn_is]
-        # ys_exact = [pm.DensityDist('y'+str(i), p,
-        #                         logp=make_logp(lm_list[i], 'exact'),
-        #                         observed=np.zeros(1), dtype='int64')
-        #          for i in exact_is]
+        loglike = pm.Potential('loglike', logp_op(p))
+        #loglike = pm.Potential('loglike', logp(p))
                
     if basis_is:
         raise NotImplementedError
@@ -112,23 +290,23 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
         with model:
             idata = pm.sample(draws=n_sample, tune=n_burnin,
                               step=[pm.NUTS(target_accept=0.9)],
-                              chains=chains, cores=cores, random_seed=seeds,
+                              nuts_sampler='numpyro',
+                              chains=chains, cores=cores, random_seed=seed,
                               compute_convergence_checks=False)
 
     return idata  
 
 
 def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None, 
-                            cycles=5, chains=5, cores=1, seeds=None): 
+                            cycles=5, chains=5, cores=1, seed=None): 
                             #adapt=False, tune_itv=50, chains=5, cores=1, seeds=None):
     if alphas is None:
         alphas = np.ones(H)
     else:
         alphas = np.array(alphas)
 
-    if seeds is None:
-        seeds = [None]*chains
-    assert len(seeds) == chains
+    seeds = np.random.default_rng(seed).integers(2**30, dtype=np.int64, size=chains)
+    # assert len(seeds) == chains
     assert n_burnin >= 200
     # latent_mult_mcmc_cgibbs.mcmc = lambda c, s: latent_mult_sample_cgibbs(lm_list, H, n_sample,
     #                                                                       n_burnin, alphas,
@@ -196,8 +374,8 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None,
                                 # vector not already in Markov basis
                                 n_add += 1
                                 lm.basis = np.vstack([lm.basis, extra])
-                    # haplotype column found
-                    break
+                            # haplotype column found
+                            break
             if found:
                 # found valid basis vector, but may or may not already be in Markov basis
                 break
@@ -205,7 +383,7 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, alphas=None,
 
     # set starting points
     for idx, lm in enumerate(lm_list):
-        if not lm.idx_var:
+        if not lm.idx_var.size:
             continue
         lm.inits = [output[f'trace_z{idx}'][-1] for output in outputs_burnin]
 
@@ -436,355 +614,4 @@ def latent_mult_sample_cgibbs_alt(lm_list, H, n_sample, n_burnin, alphas,
     #print(sorted(Counter([tuple(arr) for arr in acc_moves_arr[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
 
     return output
-
-
-class MBasisMetropolis(pm.step_methods.metropolis.Metropolis):
-    """PyMC Metropolis-Hastings sampling step where discrete random walk directions are given by a Markov basis."""
-
-    name = "markov basis metropolis"
-    default_blocked = False
-    generates_stats = True
-    stats_dtypes = [{"acc_rate": float,
-                     #"time_a": float,
-                     #"time_b": float,
-                     #"time_c": float,
-                    }]
-
-    def __init__(self, vars, shared, proposal_dist,                 
-                 n_sims=10, max_step=1, trg_moves=10,
-                 tune=True, tune_interval=50, model=None,
-                 mode=None, **kwargs):
-        """
-        Initialises the `basisMetropolis` object.
-        
-        Parameters
-        ----------
-        vars : list
-            List of one latent multinomial vector.
-        shared : list
-            List of Aesara tensors that the latent multnomial vector depends on, e.g. `p_simplex__` if there the multinomial probability is named `p` and follows a Dirichlet distribution.
-        proposal_dist : pm.step_methods.metropolis.Proposal object
-            Proposal object to simulate Metropolis-Hastings proposals.
-        n_sims : int
-            Number of times a proposal is simulated. Increase to reduce autocorrelation between recorded samples at the cost of increased runtime. Adjusted during tuning phase if `tune=True` (default).
-        max_step : int
-            Maximum step size of proposal step. Increase to encourage exploration at the cost of a lower acceptance rate. Adjusted during tuning phase if `tune=True` (default).
-        trg_moves : int
-            Number of valid proposal directions during an MCMC iteration to aim for during tuning phase. Only used if `tune=True`.
-        tune : bool
-            Whether `n_sims` and `max_step` should be adjusted during tuning phase.
-        tune_interval : int
-            Number of iterations for how often `n_sims` and `max_step` should be adjusted.
-        model : PyMC Model
-            Optional model for sampling step. Defaults to None (taken from context).
-        mode : string or `Mode` instance
-            Compilation mode passed to Aesara functions
-        """
-        self.n_sims = n_sims
-        self.max_step = max_step
-        self.trg_moves = trg_moves
-        
-        # start copy from metropolis ---
-        
-        model = pm.modelcontext(model)
-        initial_values = model.initial_point()
-        
-        assert len(vars) == 1
-        z = vars[0]
-        vars = [model.rvs_to_values.get(var, var) for var in vars]
-            
-        vars = pm.inputvars(vars)
-        
-        #initial_values_shape = [initial_values[v.name].shape for v in vars]
-        #S = np.ones(int(sum(np.prod(ivs) for ivs in initial_values_shape)))
-        
-        self.tune = tune
-        self.tune_interval = tune_interval
-        self.steps_until_tune = tune_interval
-        
-        self.accepted = 0 # for tuning max_step
-        self.moves = 0 # for tuning n_sims
-        
-        # Determine type of variables
-        # print(vars)
-        self.discrete = np.concatenate(
-            [[v.dtype in pm.discrete_types] * (initial_values[v.name].size or 1) for v in vars]
-        )
-        self.any_discrete = self.discrete.any()
-        self.all_discrete = self.discrete.all()       
-        
-        assert self.all_discrete
-        
-        # remember initial settings before tuning so they can be reset
-        self._untuned_settings = dict(
-            steps_until_tune=tune_interval, accepted=0, moves=0,
-        )
-
-        self.mode = mode
-        
-        shared = {
-            var: aesara.shared(initial_values[var.name], var.name + "_shared", broadcastable=var.broadcastable)
-            for var in shared
-        }
-        
-        # tensor_type = vars[0].type
-        # inarray0 = tensor_type("inarray0")
-        # inarray1 = tensor_type("inarray1")
-        
-        logp = pm.distributions.joint_logp(z, model.rvs_to_values[z], sum=False)[0]
-        
-        self.delta_logp = delta_logp(initial_values, logp, vars, shared)
-        ArrayStepShared.__init__(self, vars, shared)        
-        
-        # --- end copy from metropolis
-        
-        self.proposal_dist = proposal_dist
-        
-    def reset_tuning(self):
-        """Resets the tuned sampler parameters to their initial values."""
-        for attr, initial_value in self._untuned_settings.items():
-            setattr(self, attr, initial_value)
-        return        
-
-    def astep(self, q0: RaveledVars) -> Tuple[RaveledVars, List[Dict[str, Any]]]:
-        """
-        Execute one Metropolis-Hastings step.
-        
-        Parameters
-        ----------
-        q0 : RaveledVars
-            Current state of the latent multinomial vector. See `pymc.blocking` for definition of `RaveledVars`.
-            
-        Returns
-        -------
-        tuple
-            Tuple containing the next state of the latent multinomial vector as `RaveledVars`, and a dictionary consisting of the MCMC statistics for this iteration. The dictionary has the following keys:
-                max_step : Maximum step size of proposal step.
-                n_sims : Number of proposals simulated during this iteration.           
-                accepted : Number of proposals accepted (excludes transitions that do not change the state) during this iteration out of the `n_sims` proposals.
-                moves : Number of times the proposal is different from the current state out of the `n_sims` proposals.                
-        """
-        point_map_info = q0.point_map_info
-        q0 = q0.data
-        
-        if not self.steps_until_tune and self.tune:
-            if self.moves: # tune max step size
-                self.max_step = tune_max_step(self.max_step, self.accepted / self.moves)
-            
-            # tune number of proposals per iteration
-            self.n_sims = tune_n_sims(self.n_sims, self.moves / self.tune_interval, self.trg_moves)            
-            
-            # Reset counter
-            self.steps_until_tune = self.tune_interval
-            self.accepted = 0        
-            self.moves = 0
-            
-        q0 = q0.astype("int64")
-            
-        # asum, bsum, csum = 0, 0, 0
-        
-        curr_moves = 0
-        curr_accepted = 0
-        for _ in range(self.n_sims):
-            #t0 = time()           
-            
-            delta = self.proposal_dist()
-            
-            # sym
-            #q = q0 + delta
-            #accept = self.delta_logp(q, q0)
-            
-            # uniform
-            neg_step, pos_step = n_steps(q0, delta, self.max_step)
-            tot_step = neg_step + pos_step
-            if tot_step == 0:
-                q_new = q0
-                continue
-            curr_moves += 1
-            rand = np.random.randint(tot_step)
-            if rand < neg_step:
-                q = q0 - (rand+1)*delta
-            else:
-                q = q0 + (tot_step-rand)*delta
-            s1, s2 = n_steps(q, delta, self.max_step)
-            
-            #t1 = time()            
-                     
-            accept = self.delta_logp(q, q0) + np.log(tot_step / (s1+s2))   
-            
-            #print(q0, q, dlogp)
-            #tmp = list(self.shared.values())[0]
-            #print(tmp.get_value())
-            
-            # filter
-            #q, dlogp = self.proposal_dist(q0)
-            #accept = self.delta_logp(q, q0) + dlogp
-            
-            #t2 = time()
-            
-            q_new, accepted = metrop_select(accept, q, q0)
-            curr_accepted += accepted
-            q0 = q_new
-            
-            #t3 = time()
-            #asum += t1-t0
-            #bsum += t2-t1
-            #csum += t3-t2
-        
-        self.accepted += curr_accepted
-        self.moves += curr_moves
-        self.steps_until_tune -= 1
-
-        stats = {
-            "accepted": curr_accepted,
-            "moves": curr_moves,
-            "max_step": self.max_step,
-            "n_sims": self.n_sims,
-            #"time_a": asum,
-            #"time_b": bsum,
-            #"time_c": csum,
-        }
-
-        return RaveledVars(q_new, point_map_info), [stats]   
-    
-class MBSymProposal(pm.step_methods.metropolis.Proposal):
-    """Simulates proposal directions by uniformly sampling from a Markov basis."""
-    def __init__(self, basis):
-        """
-        Initialises the `MBSymProposal` object.
-        
-        Parameters
-        ----------
-        basis : 2D-array
-            Markov basis with basis vectors to sample from as rows.
-        """
-        self.basis = basis
-        self.bsize = len(basis)
-        
-    def __call__(self):
-        """Uniformly samples a basis vector from the Markov basis."""
-        return self.basis[np.random.randint(self.bsize)]
-    
-def n_steps(q, step, max_step):
-    """
-    Finds the largest possible step sizes (in two opposite directions) given the current state and proposal direction.
-
-    Parameters
-    ----------
-    q : 1D-array
-        Current state of latent multinomial vector.
-    step : 1D-array
-        Proposal direction.
-    max_step : int
-        Maximum step size.
-
-    Returns
-    -------
-    tuple
-        Largest possible step size in the negative and positive directions.            
-    """
-    neg_step = pos_step = max_step
-    for z, d in zip(q, step):
-        if d > 0 and (s := z//d) < neg_step:
-            neg_step = s
-        if d < 0 and (s := z//(-d)) < pos_step:
-            pos_step = s
-    return neg_step, pos_step
-            
-            
-    # pos_mask = step > 0
-    # neg_mask = step < 0
-    # return (np.min(q[pos_mask]//step[pos_mask], initial=max_step),
-    #         np.min(q[neg_mask]//(-step[neg_mask]), initial=max_step))
-
-def tune_scale(scale, acc_rate):
-    """
-    Adapted from pm.step_methods.metropolis.tune
-    Tunes the scaling parameter for the proposal distribution
-    according to the acceptance rate over the last tune_interval:
-
-    Rate    Variance adaptation
-    ----    -------------------
-    <0.01        x 0.1
-    <0.1         x 0.5
-    <0.3         x 0.9
-    >0.6         x 1.1
-    >0.8         x 2
-    >0.95        x 10
-    
-    Parameters
-    ----------
-    scale : float
-        Current proposal scale.
-    acc_rate : float
-        Current acceptance rate.
-
-    Returns
-    -------
-    float
-        Adjusted proposal scale.
-    """
-    if acc_rate < 0.01:
-        return scale * 0.1
-    elif acc_rate < 0.1:
-        return scale * 0.5
-    elif acc_rate < 0.3:
-        return scale * 0.9
-    elif acc_rate > 0.95:
-        return scale * 10.0
-    elif acc_rate > 0.8:
-        return scale * 2.0
-    elif acc_rate > 0.6:
-        return scale * 1.1
-    return scale
-    
-def tune_max_step(max_step, acc_rate):
-    """
-    Tunes the maximum step size for the proposal distribution
-    according to the acceptance rate over the last tune_interval:
-
-    Rate    Variance adaptation
-    ----    -------------------
-    <0.001        x 0.1
-    <0.05         x 0.5
-    <0.2          x 0.9
-    >0.5          x 1.1
-    >0.75         x 2
-    >0.95         x 10
-
-    Parameters
-    ----------
-    max_step : int
-        Current maximum step size.
-    acc_rate : float
-        Current acceptance rate.
-
-    Returns
-    -------
-    int
-        Adjusted maximum step size, rounded to an integer.
-    """
-    if acc_rate < 0.001:
-        max_step_float = max_step * 0.1
-    elif acc_rate < 0.05:
-        max_step_float = max_step * 0.5
-    elif acc_rate < 0.2:
-        max_step_float = max_step * 0.8
-    elif acc_rate > 0.95:
-        max_step_float = max_step * 10.0
-    elif acc_rate > 0.75:
-        max_step_float = max_step * 2.0
-    elif acc_rate > 0.5:
-        max_step_float = max_step * 1.2
-    else:
-        max_step_float = max_step
-    return max(1, int(round(max_step_float)))
-
-def tune_n_sims(n_sims, avg_moves, trg_moves):
-    """TODO"""           
-    return max(1, round(trg_moves/avg_moves*n_sims))
-    
-    
-
-
 

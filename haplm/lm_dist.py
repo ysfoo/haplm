@@ -20,7 +20,7 @@ import signal
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from haplm.hap_utils import encode_amat
+from haplm.hap_util import encode_amat
 
 rng = np.random.default_rng(0)
 
@@ -34,35 +34,42 @@ def find_4ti2_prefix():
 
 
 class LatentMult():
-    """Stores data relevant to a latent multinomial observation."""    
+    """
+    Stores data relevant to a latent multinomial observation. See `prep_amat` for details
+    about pre-processing details.
+    
+    Parameters
+    ----------
+    amat : 2D-array
+        Configuration matrix.
+    y : 1D-array
+        Vector of observed counts.
+    n : int
+        Sample size.
+    basis_fname : string
+        Prefix for temporary files used by 4ti2, must not clash with any other temporary files 
+        currently used by 4ti2.
+    pulp_solver : pulp.core.LpSolver_CMD
+        A solver object that can solve mixed-integer programming problems. See
+        https://coin-or.github.io/pulp/technical/solvers.html for a list of possible solvers.
+    prefix_4ti2 : string
+        Prefix to 4ti2's commands, either "" or "4ti2-" depending on installation.
+    enum_sols : bool
+        Whether to enumerate all latent count solutions.
+    find_bounds : bool
+        Whether to find bounds to all latent counts,  defaults to True. Setting to False runs 
+        much faster, but the only latent counts that can be uniquely determined are those that 
+        are zero, and are associated with an observed count of zero.
+    walk_len : int
+        Number of iterations for random walk, defaults to 500.
+    num_pts : int
+        Number of MCMC initialisation points for latent count vectors, defaults to 0.
+    timeout : float
+        Maximum time in seconds to spend when enumerate solutions, ignored if `enum_sols` is 
+        False. Defaults to None, where no maximum is imposed.
+    """    
     def __init__(self, amat, y, n, basis_fname=None, pulp_solver=None, prefix_4ti2=None,
                  enum_sols=False, find_bounds=True, walk_len=500, num_pts=0, timeout=None):
-        """
-        Initialises the `LatentMult` object. For pre-processing details see `prep_amat`.
-        
-        Parameters
-        ----------
-        amat : 2D-array
-            Configuration matrix.
-        y : 1D-array
-            Vector of observed counts.
-        n : int
-            Sample size.
-        basis_fname : string
-            Prefix for files used by 4ti2, must not clash with files used by `zsolve`.
-        pulp_solver : pulp.core.LpSolver_CMD
-            A solver object that can solve mixed-integer programming problems. See https://coin-or.github.io/pulp/technical/solvers.html for a list of possible solvers.
-        prefix_4ti2 : string
-            Prefix to 4ti2's commands, either "" or "4ti2-" depending on installation.
-        enum_sols : bool
-            Whether to enumerate all latent count solutions.
-        find_bounds : bool
-            Whether to find bounds to all latent counts,  defaults to True. Setting to False runs much faster, but the only latent counts that can be uniquely determined are those that are zero, and are associated with an observed count of zero.
-        walk_len : int
-            Number of iterations for random walk, defaults to 500.
-        num_pts : int
-            Number of MCMC initialisation points for latent count vectors, defaults to 0.
-        """
         self.amat = np.array(amat)
         self.y = np.array(y)
         self.n = n
@@ -89,8 +96,6 @@ class LatentMult():
         """
         self.markov = markov
         amat = self.amat_var.astype(int)
-        if amat.shape[1] == 0:
-            return
         self.basis = int_basis_4ti2(np.vstack([np.ones(amat.shape[1], int), amat]), self.basis_fname,
                                     self.prefix_4ti2, markov) if amat.shape[1] else None
 
@@ -129,7 +134,8 @@ class LatentMult():
             self.sols[:,self.idx_fix] = self.z_fix
             self.sols[:,self.idx_var] = self.sols_var
 
-    def enum_sols_4ti2(self, fn, timeout=None):
+
+    def enum_sols_4ti2(self, fname, timeout=None):
         """
         Enumerates all nonnegative integer solutions to Az = y after pre-processing.
         If there are multiple solutions, the count that are not uniquely determined 
@@ -137,8 +143,8 @@ class LatentMult():
         
         Parameters
         ----------
-        fn : string
-            Prefix for files used by 4ti2, must not clash with files used by `markov` or `zbasis`.
+        fname : string
+            Prefix for files used by 4ti2, must not clash with any other temporary files used by 4ti2.
         timeout : int
             Maximum time (seconds) allowed for `zsolve` to run. Defaults to `None` which imposes no runtime restriction.
             
@@ -149,11 +155,11 @@ class LatentMult():
         amat = self.amat_var.astype(int)
         self.sols_var = zsolve_4ti2(np.vstack([np.ones(amat.shape[1], int), amat]),
                                     np.array([self.n_var] + list(self.y_var)),
-                                    fn, self.prefix_4ti2, timeout) if amat.shape[1] else None
+                                    fname, self.prefix_4ti2, timeout) if amat.shape[1] else None
+
         
     def loglike_exact(self, p, logfacts):
         """
-        TODO: Aesara instead
         Computes log p(y|p) exactly using marginalisation.
         
         Parameters
@@ -194,12 +200,12 @@ class LatentMult():
 
     def loglike_mn(self, p, mn_stab=1e-9):            
         if not self.idx_var.size: # all counts can be uniquely determined
-            return pt.dot(self.z_fix, pt.log(p))
+            return pt.sum(logpow(self.z_fix, p))
         
         qsum = pt.sum(p[self.idx_var])
         
         if not self.amat_var.size: # no info on counts that cannot be uniquely determined
-            return pt.dot(self.z_fix, pt.log(p[self.idx_fix])) + self.n_var*pt.log(qsum)
+            return pt.sum(logpow(self.z_fix, p[self.idx_fix])) + logpow(self.n_var, qsum)
         
         q = p[self.idx_var]/qsum
 
@@ -211,17 +217,17 @@ class LatentMult():
         quadform = pt.dot(chol_inv_delta, chol_inv_delta)
         logdet = pt.sum(pt.log(pt.diag(chol)))
 
-        return pt.dot(self.z_fix, pt.log(p[self.idx_fix])) + self.n_var*pt.log(qsum) - 0.5*quadform - logdet
+        return pt.sum(logpow(self.z_fix, p[self.idx_fix])) + logpow(self.n_var, qsum) - 0.5*quadform - logdet
 
 
     def loglike_mn_jax(self, p, mn_stab=1e-9):            
         if not self.idx_var.size: # all counts can be uniquely determined
-            return jnp.dot(self.z_fix, jnp.log(p))
+            return jsp.special.xlogy(self.z_fix, p)
         
         qsum = jnp.sum(p[self.idx_var])
         
         if not self.amat_var.size: # no info on counts that cannot be uniquely determined
-            return jnp.dot(self.z_fix, jnp.log(p[self.idx_fix])) + self.n_var*jnp.log(qsum)
+            return jnp.sum(jsp.special.xlogy(self.z_fix, p[self.idx_fix])) + jsp.special.xlogy(self.n_var, qsum)
         
         q = p[self.idx_var]/qsum
 
@@ -410,7 +416,7 @@ def int_basis_4ti2(amat, fn, prefix_4ti2, markov=False):
     amat : 2D-array
         Matrix to find Markov basis for.
     fn : string
-        Prefix for files used by 4ti2, must not clash with files used by `zsolve`.
+        Prefix for files used by 4ti2, must not clash with any other temporary files used by 4ti2.
     markov : bool
         Whether to compute a Markov basis, defaults to False.
     prefix_4ti2 : string
@@ -457,7 +463,7 @@ def int_basis_4ti2(amat, fn, prefix_4ti2, markov=False):
     return basis
 
 
-def zsolve_4ti2(amat, y, fn, prefix_4ti2, timeout=None):
+def zsolve_4ti2(amat, y, fname, prefix_4ti2, timeout=None):
     """
     Solves the linear system amat*z = y for nonnegative integer z.
     
@@ -467,8 +473,8 @@ def zsolve_4ti2(amat, y, fn, prefix_4ti2, timeout=None):
         Configuration matrix.
     y : 1D-array
         Vector of observed counts.
-    fn : string
-        Prefix for files used by 4ti2, must not clash with files used by `markov` or `zbasis`.
+    fname : string
+        Prefix for files used by 4ti2, must not clash with any other temporary files used by 4ti2.
     prefix_4ti2 : string
         Prefix to 4ti2's commands, either "" or "4ti2-" depending on installation.
     timeout : int

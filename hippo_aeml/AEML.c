@@ -67,7 +67,7 @@ See ? for further details of the model.
 
 struct PARAMETERS_STRUCT{
   int read_haps,n_pools,n_loci,n_iterations,random_init;
-  double tol;
+  double tol,stab;
   char data_file[40],hap_file[40];
 };
 
@@ -201,9 +201,10 @@ int main(int argc, char* argv[])
     {  
       gsl_vector_set_zero(mu);	  
       gsl_matrix_set_zero(sigma);
+      for(i=0;i<n_loci;++i) gsl_matrix_set(sigma, i, i, par.stab);
       for(i=0;i<n_haps;++i)
 	{
-	  expected[i]=0.0;
+    expected[i]=0.0;
 	  gsl_blas_daxpy(p[i],H[i],mu); //mu+=p[i]*H[i]
 	  gsl_blas_dsyr(CblasLower, p[i], H[i], sigma); //sigma+=p[i]*H[i]*H[i]^T
 	}
@@ -225,7 +226,7 @@ int main(int argc, char* argv[])
 	{
 
 	  gsl_vector_memcpy (y_minus_mu,A[i]); //y_minus_mu=A[i]
-	  gsl_blas_daxpy(-2*poolsize[i],mu,y_minus_mu); //y=y_minus_mu-2*poolsize*mu
+	  gsl_blas_daxpy(-poolsize[i],mu,y_minus_mu); //y=y_minus_mu-poolsize*mu
 	  gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0,yy);//yy=u y
 
 	  gsl_blas_dgemv (CblasTrans, 1.0, u,yy,0.0,y);//y=u^t yy
@@ -236,15 +237,15 @@ int main(int argc, char* argv[])
 	  
 	  //gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0, yy); //yy=1.0*u*y_minus_mu
 	  for(j=0;j<n_eigval;++j)
-	    gsl_vector_set(x,j,-0.25/poolsize[i]/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.25/poolsize*sigma^-1*yy
+	    gsl_vector_set(x,j,-0.5/poolsize[i]/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.5/poolsize*sigma^-1*yy
 	  gsl_blas_ddot (yy, x, &val);// val=yy^T x
-	  logl+=val-0.5*(n_eigval*log(2*poolsize[i])+logdet);
+	  logl+=val-0.5*(n_eigval*log(poolsize[i])+logdet);
 
 	  for(h=0;h<n_haps;++h)
 	    {
 	      gsl_vector_memcpy (y_minus_mu,A[i]); //y_minus_mu=A[i]
 	      gsl_blas_daxpy (-1.0, H[h],y_minus_mu); //y_minus_mu=A[i]-H[j]
-	      gsl_blas_daxpy(-2*poolsize[i]+1,mu,y_minus_mu); //y_minus_mu=y_minus_mu-(2*poolsize-1)*mu
+	      gsl_blas_daxpy(-poolsize[i]+1,mu,y_minus_mu); //y_minus_mu=y_minus_mu-(poolsize-1)*mu
 	      gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0,yy);//yy=u y_minus_mu
 
 	      gsl_blas_dgemv (CblasTrans, 1.0, u,yy,0.0,y);//y=u^t yy
@@ -255,10 +256,10 @@ int main(int argc, char* argv[])
 	      
 	      //gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0, yy); //yy=1.0*u*y_minus_mu
 	      for(j=0;j<n_eigval;++j)
-		gsl_vector_set(x,j,-0.5/(2*poolsize[i]-1)/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.5/(2*poolsize-1)*sigma^-1*yy
+		gsl_vector_set(x,j,-0.5/(poolsize[i]-1)/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.5/(poolsize-1)*sigma^-1*yy
 	      gsl_blas_ddot (yy, x, &val2);// val2=yy^T x
 
-	      v=poolsize[i]*p[h]*pow(1-1.0/(2*poolsize[i]),-0.5*n_eigval)*exp(val2-val); //coeff 2 has been dropped 
+	      v=poolsize[i]*p[h]*pow(1-1.0/(poolsize[i]),-0.5*n_eigval)*exp(val2-val); //coeff 2 has been dropped 
 	      expected[h]+=v; 
 	      sum+=v;
 	    }
@@ -300,12 +301,12 @@ int main(int argc, char* argv[])
   results=fopen("AEML.out","w");    
   for(i=0;i<n_haps;++i)
     {
-      if(p[i]>1e-3)
-	{
+      //if(p[i]>1e-3)
+	//{
 	  for(j=0;j<n_loci;++j)
 	    fprintf(results,"%g",gsl_vector_get(H[i],j));
 	  fprintf(results," %8.6g\n",p[i]);
-	}
+	//}
     }
   fclose(results);
   fclose(monitor);
@@ -326,7 +327,7 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
 
   char tag[40],target[40];
   char n_loci_found=0,n_pools_found=0,n_iterations_found=0;
-  char tol_found=0,random_init_found=0;
+  char tol_found=0,stab_found=0,random_init_found=0;
   char data_file_found=0,hap_file_found=0,found;
 
   while(!feof(in))
@@ -383,6 +384,18 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
 	  tol_found=1;found=1;
 	}
 
+  sprintf(target,"stab");
+      if(strcmp(tag,target)==0)
+  {
+    if(stab_found)
+      {fprintf(stderr,"ERROR with parameters file: stab was found several times\n");exit(2);}
+    if(fscanf(in," %lf ",&par->stab)!=1)
+      {fprintf(stderr,"ERROR with parameters file:value for stab is invalid\n");exit(2);};
+    if(par->stab<0.0)
+      {fprintf(stderr,"ERROR with parameters file:value for stab is %g < 0.0\nExits!\n",par->stab);exit(2);}
+    stab_found=1;found=1;
+  }
+
       sprintf(target,"hap_file");
       if(strcmp(tag,target)==0)
 	{
@@ -427,6 +440,9 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
  if(!tol_found){
    fprintf(stderr,"Did not find label 'tol' from parameters file.\n Thus, using default value 0.00001.\n");
    par->tol=0.00001;}
+ if(!stab_found){
+   fprintf(stderr,"Did not find label 'stab' from parameters file.\n Thus, using default value 0.0.\n");
+   par->stab=0.0;}
   if(!hap_file_found){
     fprintf(stderr,"Did not find label 'hap_file' from parameters file.\n Thus, the initial list contains all haplotypes.\n");
     par->read_haps=0;
@@ -442,6 +458,7 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
   printf("Using the following parameters:\n");
   printf("n_loci=%d\nn_pools=%d\nn_iterations=%d\n",par->n_loci,par->n_pools,par->n_iterations);
   printf("tol=%g\nrandom_init=%d\n",par->tol,par->random_init);
+  printf("stab=%g\n",par->stab);
   printf("data_file=%s\n",par->data_file);
   if(par->read_haps==1)
     printf("hap_file=%s\n",par->hap_file);

@@ -46,6 +46,7 @@ See ? for further details of the model.
 
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 #include <gsl/gsl_vector.h>
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_blas.h>
@@ -61,8 +62,8 @@ See ? for further details of the model.
 #define B_PRIOR 0
 
 struct PARAMETERS_STRUCT{
-  int read_haps,variable_list,n_pools,n_loci,n_iterations,n_burnin,write_trace;
-  double beta_a,beta_c,beta_mut_1,beta_mut_2,alpha,gamma,proba_mut,tol;
+  int read_haps,variable_list,n_pools,n_loci,n_iterations,n_burnin,write_trace,thin;
+  double beta_a,beta_c,beta_mut_1,beta_mut_2,alpha,gamma,proba_mut,tol,stab;
   char data_file[40],hap_file[40];
 };
 
@@ -132,7 +133,7 @@ int main(int argc, char* argv[])
   int accept_mutations=0,accept_deletions=0,accept=0,accept_substitutions=0,not_in_span_u=0,not_in_span_u2=0;
   int reject_mutation=0,reject_deletion=0,reject=0,reject_substitutions=0,move_away=0,move_towards=0,accepted_iterations=0;
   
-  int i,j,i1,i2,iter,n_eigval,l,random_pair,try_to_mutate,*SNP_sums;;
+  int i,j,i1,i2,iter,n_eigval,l,random_pair,try_to_mutate,hcode,*SNP_sums;;
   FILE *in,*monitor,*results,*trace;
   gsl_vector **A,**H,*mu,*eig_val;
   gsl_matrix *sigma,*eig_vec,*u;
@@ -140,6 +141,8 @@ int main(int argc, char* argv[])
   void *temp_pointer;
   gsl_eigen_symmv_workspace *eig_work;
   gsl_rng * rng = gsl_rng_alloc (gsl_rng_taus);
+
+  struct timespec post_burnin, end;
 
   if(argc!=2)
     {fprintf(stderr,"Usage:./hippo 'parameters_file' (see README)\n");exit(1);}
@@ -268,6 +271,7 @@ int main(int argc, char* argv[])
 
   for(iter=0;iter<par.n_iterations;++iter)
     {
+      if(iter==par.n_burnin) clock_gettime(CLOCK_REALTIME, &post_burnin);
       if(iter%10000==9999) {
   printf("%d iterations, n_haps=%d, n_T=%d, logl=%g, dim=%d\n",iter+1,n_haps,n_T,logl,n_eigval);
   printf(" acc/rej=%d/%d, acc/rej_mutations=%d/%d, \n acc/rej_deletions=%d/%d acc/rej_substitutions=%d/%d \n",
@@ -298,6 +302,7 @@ int main(int argc, char* argv[])
 
       gsl_vector_set_zero(mu);    
       gsl_matrix_set_zero(sigma);
+      for(i=0;i<n_loci;++i) gsl_matrix_set(sigma, i, i, par.stab);
       for(i=0;i<n_haps;++i)
   {
     gsl_blas_daxpy(p2[i],H[i],mu); //mu+=p2[i]*H[i]
@@ -688,14 +693,16 @@ int main(int argc, char* argv[])
       }
   }
 
-  if(par.write_trace && iter>=par.n_burnin) {
-    fprintf(trace,"%d\n", n_haps);
-  for(i=0;i<n_haps;++i)
-    {
-      for(j=0;j<n_loci;++j)
-  fprintf(trace,"%g",gsl_vector_get(H[i],j));
-      fprintf(trace," %g\n",p[i]);
+  if(par.write_trace && iter>=par.n_burnin && iter%par.thin==par.thin-1) {
+    // fprintf(trace,"%d\n", n_haps);
+    for(i=0;i<n_haps;++i) {
+      hcode = 0;
+      for(j=0;j<n_loci;++j) {
+        if(gsl_vector_get(H[i],j)) hcode |= (1 << j);
+      }
+      fprintf(trace,"%d %g ",hcode,p[i]);
     }
+    fprintf(trace,"\n");
   }
 
       //print out the MAP estimate
@@ -714,11 +721,17 @@ int main(int argc, char* argv[])
   }
     }
 
+  clock_gettime(CLOCK_REALTIME, &end);
+
   fclose(monitor);
 
   printf("Acceptance ratios:%g %g %g %g\n",
    accept/1.0/par.n_iterations,accept_mutations/1.0/par.n_iterations,accept_deletions/1.0/par.n_iterations,accept_substitutions/1.0/par.n_iterations);
   printf("accepted_iterations=%d, move away=%d, move in=%d\n",accepted_iterations,move_away,move_towards);
+
+  printf("Time after burn-in is %f\n",
+    end.tv_sec-post_burnin.tv_sec+(end.tv_nsec-post_burnin.tv_nsec)/1000000000.0);
+
  #if B_PRIOR == 1
   printf("E(b)=%g\n",bsum/(par.n_iterations-par.n_burnin));
 #endif

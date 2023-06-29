@@ -129,6 +129,27 @@ dmypy.json
 .pyre/
 
 # Non-code files in hippo_aeml
-!hippo_aeml/
 hippo_aeml/*
 !hippo_aeml/*.c
+!hippo_aeml/*README*
+
+# 4ti2 files
+4ti2-files/*
+
+# data
+*.pkl
+*.netcdf
+*.npy
+*.xlsx
+*.xls
+
+# images
+*.png
+*.tif
+*.jpeg
+
+# output files
+*.out
+
+# unused files
+unused/*

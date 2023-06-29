@@ -52,8 +52,8 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
   //MP 240609
 
   char tag[40],target[40];
-  char n_loci_found=0,n_pools_found=0,n_iterations_found=0,n_burnin_found=0,variable_list_found=0,write_trace_found=0;
-  char beta_a_found=0,tol_found=0,beta_c_found=0,beta_mut_1_found=0,beta_mut_2_found=0,alpha_found=0,gamma_found=0,proba_mut_found=0;
+  char n_loci_found=0,n_pools_found=0,n_iterations_found=0,n_burnin_found=0,variable_list_found=0,write_trace_found=0,thin_found=0;
+  char beta_a_found=0,tol_found=0,stab_found=0,beta_c_found=0,beta_mut_1_found=0,beta_mut_2_found=0,alpha_found=0,gamma_found=0,proba_mut_found=0;
   char data_file_found=0,hap_file_found=0,found;
 
   while(!feof(in))
@@ -130,8 +130,20 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
     if(fscanf(in," %d ",&par->write_trace)!=1)
       {fprintf(stderr,"ERROR with parameters file:value for write_trace is invalid\n");exit(2);};
     if(par->write_trace>1 || par->write_trace<0)
-      {fprintf(stderr,"ERROR with parameters file:value for write_trace is %d != 0,1,2\nExits!\n",par->write_trace);exit(2);}
+      {fprintf(stderr,"ERROR with parameters file:value for write_trace is %d != 0,1\nExits!\n",par->write_trace);exit(2);}
     write_trace_found=1;found=1;
+  }
+
+  sprintf(target,"thin");
+      if(strcmp(tag,target)==0)
+  {
+    if(thin_found)
+      {fprintf(stderr,"ERROR with parameters file:thin was found several times\n");exit(2);}
+    if(fscanf(in," %d ",&par->thin)!=1)
+      {fprintf(stderr,"ERROR with parameters file:value for thin is invalid\n");exit(2);};
+    if(par->thin<1)
+      {fprintf(stderr,"ERROR with parameters file:value for thin is %d < 1\nExits!\n",par->thin);exit(2);}
+    thin_found=1;found=1;
   }
 
       sprintf(target,"d");
@@ -230,6 +242,18 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
 	  tol_found=1;found=1;
 	}
 
+      sprintf(target,"stab");
+      if(strcmp(tag,target)==0)
+  {
+    if(stab_found)
+      {fprintf(stderr,"ERROR with parameters file: stab was found several times\n");exit(2);}
+    if(fscanf(in," %lf ",&par->stab)!=1)
+      {fprintf(stderr,"ERROR with parameters file:value for stab is invalid\n");exit(2);};
+    if(par->stab<0.0)
+      {fprintf(stderr,"ERROR with parameters file:value for stab is %g < 0.0\nExits!\n",par->stab);exit(2);}
+    stab_found=1;found=1;
+  }
+
       sprintf(target,"hap_file");
       if(strcmp(tag,target)==0)
 	{
@@ -271,6 +295,10 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
     fprintf(stderr,"Did not find label 'write_trace' from parameters file.\n"); 
     fprintf(stderr,"Thus, trace is not recorded.\n");
     par->write_trace=0;}
+  if(!thin_found){
+    fprintf(stderr,"Did not find label 'thin' from parameters file.\n"); 
+    fprintf(stderr,"Thus, no thinning is performed.\n");
+    par->thin=1;}
   if(!beta_a_found){
     fprintf(stderr,"Did not find label 'd' from parameters file.\n Thus, using default value 0.2.\n");
     par->beta_a=0.2;}
@@ -295,6 +323,9 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
  if(!tol_found){
    fprintf(stderr,"Did not find label 'tol' from parameters file.\n Thus, using default value 0.001.\n");
    par->tol=0.001;}
+  if(!stab_found){
+   fprintf(stderr,"Did not find label 'stab' from parameters file.\n Thus, using default value 0.0.\n");
+   par->stab=0.0;}
   if(!hap_file_found){
     fprintf(stderr,"Did not find label 'hap_file' from parameters file.\n Thus, the initial list contains all haplotypes.\n");
     par->read_haps=0;
@@ -308,8 +339,10 @@ void read_parameters(FILE *in, struct PARAMETERS_STRUCT *par)
   printf("n_loci=%d\nn_pools=%d\nn_iterations=%d\nn_burnin=%d\n",par->n_loci,par->n_pools,par->n_iterations,par->n_burnin);
   printf("alpha=%g\ngamma=%g\nc=%g\nd=%g\nc_old=%g\nc_new=%g\n",par->alpha,par->gamma,par->beta_c,par->beta_a,par->beta_mut_1,par->beta_mut_2);
   printf("p_add=%g\ntol=%g\n",par->proba_mut,par->tol);
+  printf("stab=%g\n",par->stab);
   printf("variable_list=%d\n",par->variable_list);
   printf("write_trace=%d\n",par->write_trace);
+  printf("thin=%d\n",par->thin);
   printf("data_file=%s\n",par->data_file);
   if(par->read_haps==1)
     printf("hap_file=%s\n",par->hap_file);
@@ -737,7 +770,7 @@ double loglkhood(gsl_vector **A,gsl_vector * mu,gsl_matrix* u,gsl_vector *eig_va
   for(i=0;i<n_pools;++i)
     {
       gsl_vector_memcpy (y_minus_mu,A[i]); //y_minus_mu=A[i]
-      gsl_blas_daxpy(-2*poolsize[i],mu,y_minus_mu); //y=y_minus_mu-2*poolsize*mu
+      gsl_blas_daxpy(-poolsize[i],mu,y_minus_mu); //y=y_minus_mu-poolsize*mu
       gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0,yy);//yy=u y
       gsl_blas_dgemv (CblasTrans, 1.0, u,yy,0.0,y);//y=u^t yy
       gsl_blas_daxpy (-1.0, y_minus_mu, y);
@@ -748,9 +781,9 @@ double loglkhood(gsl_vector **A,gsl_vector * mu,gsl_matrix* u,gsl_vector *eig_va
 
       //gsl_blas_dgemv (CblasNoTrans, 1.0, u, y_minus_mu, 0.0, yy); //yy=1.0*u*y_minus_mu
       for(j=0;j<n_eigval;++j)
-	gsl_vector_set(x,j,-0.25/poolsize[i]/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.25/poolsize*sigma^-1*yy
+	gsl_vector_set(x,j,-0.5/poolsize[i]/(gsl_vector_get(eig_val,j))*gsl_vector_get(yy,j));//x=-0.5/poolsize*sigma^-1*yy
       gsl_blas_ddot (yy, x, &val);// val=y^T x
-      logl+=val-0.5*(n_eigval*log(2*poolsize[i])+logdet); //n_loci*log(2*poolsize) could be omitted
+      logl+=val-0.5*(n_eigval*log(poolsize[i])+logdet); //n_loci*log(poolsize) could be omitted
    }
   *not_in_span_u=not;
 

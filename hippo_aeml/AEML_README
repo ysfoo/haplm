@@ -1,0 +1,169 @@
+****
+AEML (v 1.0.)
+****
+ 
+Approximative 
+EM -algorithm that uses 
+List of known haplotypes.
+
+Description:
+AEML is a program for estimating haplotype distribution
+from pooled DNA data and is able to utilize prior information
+about the haplotypes that are known to be present in the population.
+AEML is an extension of AEM published by
+Kuk et al. (Computationally feasible estimation of haplotype frequencies 
+from pooled DNA with and without Hardy–Weinberg equilibrium
+Bioinformatics 2009:25(3):379-386.)
+
+See ? for further details of the model.
+
+Author:
+Matti Pirinen
+matti.pirinen@iki.fi
+
+1.COMPILING AND RUNNING
+---------------------
+The package includes compiled version of the program (file 'aeml').
+If it does not work on your system you have to compile the program.
+AEML is written in ANSI-C and requires GNU Scientific library 
+http://www.gnu.org/software/gsl/
+AEML has been tested with C-compiler gcc 2.95.4 and GSL v.1.1.1.
+
+To compile, you need file: AEML.c
+
+For example, to compile with gcc, give command:
+gcc AEML.c -o AEML -lgsl -lgslcblas -lm
+
+file 'AEML' will be produced.
+
+To run the program, the syntax is
+./AEML parameters_file
+
+If you are having troubles in compiling, make sure that
+you have GSL installed and that the paths to GSL-directory 
+are correctly specified in the 
+#include -commands at the beginning of hippo.c.
+
+
+2.INPUT:
+-------
+As input, AEML requires a parameter file, a data file and additionally
+a haplotype file.
+
+2.1.PARAMETER FILE:
+--------------
+Should be a plain ascii file.
+Each row contains a parameter label and the corresponding parameter value, 
+separated from each other by a white space. 
+
+Valid labels are (* denotes an obligatory parameter)
+----------------
+data_file (*)
+n_loci (*)
+n_pools (*)
+hap_file
+n_iterations
+random_init
+tol
+
+If some of the other labels than those 3 marked with * are not specified,
+then the default values are used for them. 
+
+
+Type and meaning of each parameter (see article for details)
+----------------------------------
+data_file (string <40 characters) the name of the data file
+n_loci (int) number of loci
+n_pools (int) number of pools
+hap_file (string <40 characters) the name of the file that contains the list of known haplotypes
+n_iterations (int) number of iterations
+random_init (0 or 1) if == 0, haplotypes are initialized to have frequency 1/n_haps
+                     if == 1, random initial frequencies are given to haplotypes
+tol (double,>0) program finishes when difference in loglkhood between two consecutive iterations < 'tol'
+
+
+2.2.DATA FILE:
+----------
+
+A plain ascii file.
+One row for each pool.
+Should contain 'n_pools' rows.
+Each row contains 1+'n_loci' entries (integers) separated by white spaces:
+
+poolsize a_1 a_2 ... a_n_loci
+
+where poolsize is an integer telling how many individuals are in the pool
+a_i is the count of alleles of type 1 in locus i, for i=1,...,n_loci
+(Alleles are of two types: 0 and 1.)
+
+Example (n_pools=2,n_loci 5, poolsizes=10):
+10 5 8 2 20 4
+10 9 5 0 18 7
+
+
+
+2.3.HAPLOTYPE FILE
+--------------
+
+A plain ascii file.
+First row contains the number of haplotypes that will be put to initial list.
+Each of the following rows contains one haplotype i.e. 
+n_loci entries of 0's or 1's separated by white spaces.
+
+Example (known haps=6,n_loci=5)
+6
+0 0 1 0 1
+0 1 1 0 0
+1 0 1 0 1
+0 1 0 1 1
+0 1 0 1 0
+1 1 1 0 0 
+
+If no hap_file is specified, then all 2^n_loci haplotypes on n_loci 
+are put to the initial list. For computational reasons, this option is
+currently restricted to situations where n_loci is at most 10.
+
+2.4. SEED FILE
+--------------
+Applies only if random_init==1. 
+
+AEML reads the seed for the random number generator (RNG) 
+from file 'AEML_seed' if such a file exists. 
+Otherwise, the RNG is initialized from the current time.
+AEML writes a new seed to file 'AEML_seed' after each run, which makes sure 
+that separate runs of AEML use different seeds by default. 
+
+
+3. OUTPUT
+----------
+
+3.1 OUTPUT FILES
+----------------
+AEML.out
+AEML_monitor.out
+
+AEML.out
+One row for each haplotype in the list:
+haplotype expected_value_of_frequency 
+
+AEML_monitor.out
+For every iteration contains the value of loglikelihood.
+
+3.2 OUTPUT ON SCREEN
+--------------------
+First AEML echoes input parameters and data.
+
+Then difference in loglkhoods between two consecutive iterations are
+printed.
+
+4. CONTACT INFORMATION
+----------------------
+
+Matti Pirinen
+matti.pirinen@iki.fi
+
+This work was done at the University of Helsinki, Finland.
+
+
+README FILE ENDS
+

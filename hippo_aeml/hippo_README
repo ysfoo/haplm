@@ -1,0 +1,220 @@
+
+***********
+HIPPO v.1.0 (README file) 28-June-2009
+***********
+Haplotype estimation using 
+Incomplete 
+Prior information from 
+Pooled 
+Observations
+
+Description:
+Hippo is a program for estimating haplotype distribution
+from pooled DNA data and is able to utilize prior information
+about the haplotypes that are known to be present in the population.
+See ? for details.
+
+Author:
+Matti Pirinen
+matti.pirinen@iki.fi
+
+
+1.COMPILING AND RUNNING
+---------------------
+Package includes compiled version of the program (file 'hippo').
+If it does not work on your system you have to compile the program.
+Hippo is written in ANSI-C and requires GNU Scientific library 
+http://www.gnu.org/software/gsl/
+Hippo has been tested with C-compiler gcc 2.95.4 and GSL v.1.1.1.
+
+To compile, you need two files: 
+hippo.c and hippo_functions.c
+
+For example, to compile with gcc, give command:
+gcc hippo.c -o hippo -lgsl -lgslcblas -lm
+
+file 'hippo' will be produced.
+
+To run the program, the syntax is
+./hippo parameters_file
+
+If you are having troubles in compiling, make sure that
+you have GSL installed and that the paths to GSL-directory 
+are correctly specified in the 
+#include -commands at the beginning of hippo.c.
+
+
+2.INPUT:
+-------
+As input, Hippo requires a parameter file, a data file and additionally
+a haplotype file.
+
+2.1.PARAMETER FILE:
+--------------
+Should be a plain ascii file.
+Each row contains a parameter label and the corresponding parameter value, 
+separated from each other by a white space. 
+
+Valid labels are (* denotes an obligatory parameter)
+----------------
+data_file (*)
+n_loci (*)
+n_pools (*)
+hap_file
+n_iterations
+n_burnin 
+permanent_list
+gamma 
+alpha 
+p_add 
+c_old 
+c_new 
+c 
+d 
+tol
+
+If some of the other labels than those 3 marked with * are not specified,
+then the default values are used for them. Note that the defaults may not 
+be appropriate in all cases.
+
+
+Type and meaning of each parameter (see article for details)
+----------------------------------
+data_file (string <40 characters) the name of the data file
+n_loci (int) number of loci
+n_pools (int) number of pools
+hap_file (string <40 characters) the name of the file that contains the list of known haplotypes
+n_iterations (int) number of iterations
+n_burnin (int) number of burnin iterations before the results are collected
+variable_list (0 or 1 or 2) if 0, then the haplotype list is fixed to its initial value
+                        if 1 then additional haplotypes are proposed, but initial haplotypes are never deleted
+                        if 2, then all haplotypes may be added to or deleted from the list
+gamma (double,>0) the penalty parameter for the number of haplotypes
+alpha (double,>0) the Dirichlet prior parameter for haplotype frequencies
+p_add (double,>=0) probability of proposing an additional haplotype in RJMCMC
+                   with probability 1-p_add a deletion of a haplotype is attempted
+c_old (double,>=0) weight of existing haplotype when frequencies are distributed
+c_new (double,>=0) weight of novel haplotype when frequencies are distributed
+c (double,>0) multiplicative constant in Beta-distribution when frequencies are updated
+d (double,>0) additive constant in Beta-distribution when frequencies are updated
+tol (double,>0) prints only haplotypes whose freqs are above 'tol'
+
+2.2.DATA FILE:
+----------
+
+A plain ascii file.
+One row for each pool.
+Should contain 'n_pools' rows.
+Each row contains 1+'n_loci' entries (integers) separated by white spaces:
+
+poolsize a_1 a_2 ... a_n_loci
+
+where poolsize is an integer telling how many individuals are in the pool
+a_i is the count of alleles of type 1 in locus i, for i=1,...,n_loci
+(Alleles are of two types: 0 and 1.)
+
+Example (n_pools=2,n_loci 5, poolsizes=10):
+10 5 8 2 20 4
+10 9 5 0 18 7
+
+
+
+2.3.HAPLOTYPE FILE
+--------------
+
+A plain ascii file.
+First row contains the number of haplotypes that will be put to initial list.
+Each of the following rows contains one haplotype i.e. 
+n_loci entries of 0's or 1's separated by white spaces.
+
+Example (known haps=6,n_loci=5)
+6
+0 0 1 0 1
+0 1 1 0 0
+1 0 1 0 1
+0 1 0 1 1
+0 1 0 1 0
+1 1 1 0 0 
+
+If no hap_file is specified, then all 2^n_loci haplotypes on n_loci 
+are put to the initial list. For computational reasons, this option is
+currently restricted to situations where n_loci is at most 10.
+
+2.4. SEED FILE
+--------------
+Hippo reads the seed for the random number generator (RNG) from file 'seed'
+if such a file exists. Otherwise, the RNG is initialized from the current time.
+Hippo writes a new seed to file 'seed' after each run, which makes sure 
+that separate runs of Hippo use different seeds by default. 
+
+
+3. OUTPUT
+----------
+
+3.1 OUTPUT FILES
+----------------
+results.raw
+results.out
+monitor.out
+MAP.out 
+
+results.raw
+Contains results as collected during the run.
+Each row has three entries:
+haplotype sum_of_frequency sum_of_squared_frequency
+
+
+results.out
+One row for each haplotype whose frequency > tolerance:
+haplotype expected_value_of_frequency standard_deviation_of_estimate
+
+
+monitor.out
+For every 1000nd iteration contains 4 values:
+posterior_density likelihood ? ?
+
+
+MAP.out
+Maximum a posteriori results.
+
+3.2 OUTPUT ON SCREEN
+--------------------
+First Hippo echoes input parameters and data.
+
+Then for every 10000nd iteration the following is printed:
+
+10000 iterations, n_haps=21, n_T=17, logl=111.756, dim=15
+ acc/rej=1847/18152, acc/rej_mutations=19/11809,
+ acc/rej_deletions=17/874 acc/rej_substitutions=6991/12852
+
+This means
+n_haps: total number of haplotypes currently in the list 
+n_T: number of additional haplotypes currently in th list (T=temporary)
+logl:
+dim: dimension of the ? space
+Four counts of accepted/rejected attempts are shown for updates of
+1. haplotype frequencies
+2. addition of haplotype
+3. deletion of a haplotype
+4. substitution of a haplotype by another, 
+respectively.
+
+Finally acceptance ratios for these four types of updates are shown:
+
+Acceptance ratios:0.09235 0.00095 0.00085 0.34955
+
+And details on how many iterations were legal in the sense of
+data being in the span of covariance matrix (see article):
+
+accepted_iterations=10000, move away=0, move in=0
+
+4. CONTACT INFORMATION
+----------------------
+
+Matti Pirinen
+matti.pirinen@iki.fi
+
+This work was done at the University of Helsinki, Finland.
+
+
+README FILE ENDS

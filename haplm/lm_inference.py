@@ -1,13 +1,15 @@
+"""
+Functions for performing Bayesian inference with latent multinomial models.
+"""
+
 from collections import Counter, defaultdict as dd
 
 import numpy as np
-import scipy.stats
-from scipy.special import softmax, gammaln, logsumexp
+from scipy.special import gammaln
 import pulp
 import sympy
 from sympy.polys.domains import ZZ
 from sympy.polys.matrices import DM
-import math
 from time import time
 import xarray
 
@@ -29,45 +31,79 @@ import pytensor.tensor as pt
 from pytensor.graph import Apply, Op
 from pytensor.link.jax.dispatch import jax_funcify
 
-import jax
-import jax.numpy as jnp
-import jax.scipy as jsp
+import haplm.numpyro_util
 
-import numpyro
-from numpyro.util import progress_bar_factory
-import numpyro.distributions as dist
-from numpyro.infer import MCMC, HMC, NUTS, HMCGibbs
-from numpyro.infer.hmc import hmc
-from numpyro.infer.hmc_gibbs import HMCGibbsState
-from haplm.numpyro_util import sample_numpyro_nuts
-
-from datetime import datetime
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 import sys
-import copy
 
 from atpbar import atpbar, register_reporter, find_reporter, flush
 import multiprocessing
 
 
 def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
-                     logprior_func=None, target_accept=0.9, jaxify=False,
-                     chains=5, seed=None):   
-    # check if no need for approximation nor discrete sampling
+                     logprior_func=None, jaxify=False, **kwargs):   
+    """
+    Performs Bayesian inference using NUTS for latent multinomial distributions 
+    which share the same multinomial probabilities. NUTS is called via 
+    `pymc.sampling_jax.sample_numpyro_nuts`. The latent multinomial likelihood 
+    for each data point is either calculated exactly via enumerating all 
+    possible latent counts ('exact') or approximately ('mn_approx') via a 
+    multinormal approximation, as specified through the `methods` argument.
+
+    Parameters
+    ----------
+    lm_list : list[haplm.lm_dist.LatentMult]
+        List of `LatentMult` objects storing information about the latent
+        multinomial observations.
+    H : int > 0
+        Number of multinomial categories.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    methods : list[str]
+        List of strings that are either 'exact' or 'mn_approx', whose length is
+        equal to that of `lm_list`, indicating whether the probability mass
+        function of the corresponding latent multinomial distribution is
+        calculated exactly or using a multinormal approximation.
+    logprior_func : callable, optional
+        Function that takes in a `pytensor.tensor.TensorVariable` vector as the
+        multinomial probabilities and returns the log prior density. Defaults
+        to a uniform prior if unspecified.
+    jaxify : bool, default False
+        Whether the log joint-likelihood density is computed through `jax` 
+        functions wrapped in a `pytensor.graph.Op`. Setting this to `True` may 
+        speed up compilation but slow down sampling.
+    kwargs :
+        Keyword arguments passed to `pymc.sampling_jax.sample_numpyro_nuts`,
+        such as `chains`, `random_seed` and `target_accept`.
+
+    Returns
+    -------
+    arviz.InferenceData
+        An ArviZ ``InferenceData`` object that contains the posterior samples.
+    """
+    # if all latent counts are uniquely determined, use exact calculation
     for i, lm in enumerate(lm_list):
         if not lm.idx_var.size or not lm.amat_var.size:
             methods[i] = 'exact'
     
     exact_is = [i for i, method in enumerate(methods) if method=='exact']
-    basis_is = [i for i, method in enumerate(methods) if method=='basis']
     mn_is = [i for i, method in enumerate(methods) if method=='mn_approx']
-    assert len(exact_is)+len(basis_is)+len(mn_is) == len(lm_list)
+    assert len(exact_is)+len(mn_is) == len(lm_list), (
+        "Method names must be `exact` or `mn_approx`")
 
-    logfacts = scipy.special.gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2))
+    # get log-factorial values for LatentMult with exact method
+    if exact_is:
+        logfacts = gammaln(np.arange(1, max(lm_list[i].n_var for i in exact_is)+2))
+
+    # --- begin unused
 
     ### jax, with grad
 
+    # import jax
+    #
     # if logprior_func is None:
     #     logjoint = lambda p: (sum(lm_list[i].loglike_mn_jax(p) for i in mn_is)
     #                       + sum(lm_list[i].loglike_exact_jax(p, logfacts) for i in exact_is))
@@ -103,15 +139,20 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
     # def logjoint_dispatch(op, **kwargs):
     #     return val_and_grad
 
+    # --- end unused
+
+    # using JAX
     if jaxify:
         if logprior_func is None:
-            logjoint_fn = lambda p: (sum(lm_list[i].loglike_mn_jax(p) for i in mn_is)
+            logjoint_fn = lambda p: (
+                              sum(lm_list[i].loglike_mn_jax(p) for i in mn_is)
                               + sum(lm_list[i].loglike_exact_jax(p, logfacts) for i in exact_is))
         else:
             logjoint_fn = lambda p: (logprior_func(p)
                               + sum(lm_list[i].loglike_mn_jax(p) for i in mn_is)
                               + sum(lm_list[i].loglike_exact_jax(p, logfacts) for i in exact_is))
 
+        # based on https://www.pymc.io/projects/examples/en/latest/case_studies/wrapping_jax_function.html
         class LogjointOp(Op):
             default_output = 0
 
@@ -130,6 +171,7 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
         def logjoint_dispatch(op, **kwargs):
             return logjoint_fn  
 
+    # not using JAX
     else:
         if logprior_func is None:
             def logjoint(p):
@@ -142,47 +184,83 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
                         + sum(lm_list[i].loglike_exact(p, logfacts) for i in exact_is))
 
     # inference
-
-    if basis_is:
-        raise NotImplementedError
-
     with pm.Model() as model:
         p = pm.Dirichlet('p', np.ones(H))
         logjoint_var = pm.Potential('logjoint', logjoint(p))
-    
-    with model:
-        idata = pm.sampling_jax.sample_numpyro_nuts(draws=n_sample,
-                                                    tune=n_burnin,
-                                                    chains=chains,
-                                                    target_accept=target_accept,
-                                                    random_seed=seed,
-                                                    postprocessing_chunks=10)
+        idata = pm.sampling_jax.sample_numpyro_nuts(draws=n_sample, tune=n_burnin, **kwargs)
 
-        # idata = pm.sample(draws=n_sample, tune=n_burnin,
-        #                   step=[pm.NUTS(target_accept=target_accept)],
-        #                   nuts_sampler='numpyro',
-        #                   chains=chains, cores=chains, random_seed=seed,
-        #                   compute_convergence_checks=False)
     print('', file=sys.stderr)
 
     return idata  
 
 
-def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
-                            alphas=None, chains=5, cores=1, seed=None):
+def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len=None,
+                            alphas=None, chains=5, cores=1, random_seed=None):
+    """
+    Performs Bayesian inference for latent multinomial distributions which share 
+    the same multinomial probabilities using a collapsed Metropolis-within-Gibbs
+    algorithm to sample the latent counts. This is an exact method that does 
+    not require all possible latent counts to be enumerated. However, the prior
+    must be a Dirichlet distribution.
+
+    Between the burn-in phase and the inference phase, the basis from which 
+    proposal directions are sampled from is augmented. The augmented vectors are 
+    determined by the LLL algorithm performed on the columns of the 
+    configuration matrix that correspond to low ESS during the second half of 
+    the burn-in phase. Also, prior annealing is used for the first half of the 
+    burn-in phase.
+
+    Parameters
+    ----------
+    lm_list : list[haplm.lm_dist.LatentMult]
+        List of `LatentMult` objects storing information about the latent
+        multinomial observations.
+    H : int > 0
+        Number of multinomial categories.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    cyc_len : int > 0, optional
+        Number of latent count updates per MCMC iteration. Set to 5 times the 
+        sum of all pool sizes if unspecified.
+    alphas : list[float > 0], optional
+        List of Dirichlet concentrations for the prior to the multinomial 
+        probabilities. Set to a uniform prior if unspecified.
+    chains : int > 0, default 5
+        The number of MCMC chains to run.
+    cores : int > 0, default 1
+        The number of chains to run in parallel.
+    random_seed : int, optional
+        Seed for `numpy` random generation.
+
+    Returns
+    -------
+    arviz.InferenceData
+        An ArviZ ``InferenceData`` object that contains the posterior samples.
+    """
+    # indices of `lm_list` where latent counts should be sampled
+    basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var.size]
+
     if alphas is None:
         alphas = np.ones(H)
     else:
         alphas = np.array(alphas)
-    basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var.size]
+    
+    # default value for number of latent count updates per MCMC iteration
+    if cyc_len is None:
+        cyc_len = 5*sum(lm_list[i].n_var for i in basis_is)
 
-    seeds = np.random.default_rng(seed).integers(2**30, dtype=np.int64, size=2*chains)
-
-    # find low ESS haplotypes  
-    n_remove = n_burnin // 2
-    mcmc = partial(latent_mult_sample_cgibbs, lm_list, H, n_burnin - n_remove, n_remove, alphas, cyc_len)
+    # seeds for each chain
+    seeds = np.random.default_rng(random_seed).integers(2**30, dtype=np.int64, size=2*chains)
 
     print('Burn-in phase...')
+    t0 = time()
+
+    # use second half of burn-in phase to determine multinomial categories with low ESS
+    n_remove = n_burnin // 2
+    mcmc = partial(_latent_mult_sample_cgibbs, lm_list, H, n_burnin - n_remove, n_remove, alphas, cyc_len)
+
     if cores==1:
         outputs_burnin = [mcmc(c, s) for c, s in zip(range(chains), seeds[:chains])]    
     else:        
@@ -192,20 +270,25 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
             flush()
 
     print('Augmenting bases...')
-    t = time()
+    t1 = time()
     posterior = {f'z{i}': (('chain', 'draw', 'z_dim'),
                            np.array([output[f'trace_z{i}'] for output in outputs_burnin]))
                 for i in basis_is}
     ess = az.ess(xarray.Dataset(posterior))
 
     for i, lm in enumerate(lm_list):
+        # skip if no latent counts samples
         if not lm.idx_var.size:
             continue
+
+        # number of categories sampled
         nz = len(lm.idx_var)
         zess = ess[f'z{i}'].values[lm.idx_var]
+
+        # cluster indices into two groups by ESS
         # indices of zess in increasing order
         order = list(np.argsort(zess))
-        # cluster indices into two groups by ESS
+        # threshold for there to be considered two clusters
         dist_best = 0.2*np.sum(np.abs(zess-np.median(zess)))
         lowess_list = order # indices for the group with low ESS
         for div in range(1, len(order)):
@@ -216,7 +299,8 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
                 lowess_list = order[:div]
 
         amat = sympy.Matrix(np.vstack([np.ones(nz, int), lm.amat_var.astype(int)]))
-        nspace = []
+        nullspace = []
+        # sympy nullspace may be rationals instead, convert to integer vectors
         for vec in amat[:,lowess_list].nullspace():
             denoms = [x.q for x in vec if type(x) == sympy.Rational]
             if len(denoms) == 0:
@@ -225,14 +309,16 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
                 arr = np.array(vec*denoms[0], int)
             else:
                 arr = np.array(vec*sympy.ilcm(*denoms), int)
-            nspace.append(arr.T[0])
-        if not nspace:
+            nullspace.append(arr.T[0])
+        if not nullspace:
             continue
-        nspace = np.vstack(nspace)
+        nullspace = np.vstack(nullspace)
 
-        reduced = DM(nspace, ZZ).lll()
+        # find short basis vectors to nullspace using LLL algorithm
+        reduced = DM(nullspace, ZZ).lll()
         extras = np.array(reduced.to_Matrix(), int)
         div = len(lowess_list)
+        # skip vectors that have Euclidean norm > 5 as the accept prob. would often be low
         for tmp in extras:
             if np.linalg.norm(tmp) > 5:
                 continue
@@ -244,18 +330,18 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
                 print(f'add basis vector {extra} for data point {i}')
                 lm.basis = np.vstack([lm.basis, extra])
 
-    extend_t = time()-t
+    time_augment = time()-t1
 
-    # extend basis and set starting points
+    # set starting points of inference phase to the last point of burn-in phase
     for idx, lm in enumerate(lm_list):
         if not lm.idx_var.size:
             continue
         lm.inits = np.array([output[f'trace_z{idx}'][-1] for output in outputs_burnin])
 
-    # inference run
-    mcmc = partial(latent_mult_sample_cgibbs, lm_list, H, n_sample, 0, alphas, cyc_len)
-
     print('Inference phase...')
+
+    mcmc = partial(_latent_mult_sample_cgibbs, lm_list, H, n_sample, 0, alphas, cyc_len)
+
     if cores==1:
         outputs = [mcmc(c, s) for c, s in zip(range(chains), seeds[chains:])]    
     else:        
@@ -263,6 +349,8 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
         with multiprocessing.Pool(cores, register_reporter, [reporter]) as p:
             outputs = p.starmap(mcmc, list(zip(range(chains), seeds[chains:])))
             flush()
+
+    time_total = time()-t0
         
     posterior = {}
     sample_stats = {}
@@ -278,76 +366,94 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len,
             posterior[key[6:]] = (dims, stacked)
         else:
             sample_stats[key] = (dims, stacked)
-    sample_stats['time_incl_tune'] = (('chain',), sample_stats['time_excl_tune'][1] +
-                                      np.array([output['time_incl_tune'] for output in outputs_burnin]))
 
     idata = az.InferenceData(posterior=xarray.Dataset(posterior),
                              sample_stats=xarray.Dataset(sample_stats))
-    idata.attrs['extend_time'] = extend_t
+    idata.attrs['augment_time'] = time_augment
+    idata.attrs['sampling_time'] = time_total - time_augment
+
     return idata
 
 
-def nbor_ps(z0, signed_basis, a0, logfacts):
+def _nbor_ps(z0, signed_basis, a0, logfacts):
+    """
+    Helper function for getting neighbours to a latent sample vector, and the 
+    sum of log-factorials of each neighbour's latent counts.
+    """
     nbors = z0 + signed_basis
     nbors = nbors[np.all(nbors >= 0, axis=1)]
     return nbors, logfacts[nbors].sum(axis=1)
 
 
-def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
-                              cyc_len, chain=0, seed=None): 
-    t = time()
-    
+def _latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
+                               cyc_len, chain=0, seed=None): 
+    """
+    Helper function for running a single chain of collapsed Metropolis-within-
+    Gibbs to sample latent counts.
+    """
+    # indices of `lm_list` where latent counts should be sampled
     basis_is = [i for i, lm in enumerate(lm_list) if lm.idx_var.size]
+    nz = len(basis_is)
+    idxs = list(range(nz))
+
+    # pre-compute log-factorial values
     logfacts = gammaln(np.arange(1,max(lm_list[i].n_var for i in basis_is)+2))
     rng = np.random.default_rng(seed)
 
+    # current latent count values
     zs = [lm_list[i].inits[chain,lm_list[i].idx_var] for i in basis_is]
-    bsizes = [len(lm_list[i].basis) for i in basis_is]
-    ncols = [len(lm_list[i].idx_var) for i in basis_is]
+    # basis vectors and their negations for each LatentMult
     signed_bases = [np.vstack([-lm_list[i].basis, lm_list[i].basis]) for i in basis_is]
 
-    # sum latent counts
+    # sum latent counts for posterior Dirichlet distribution
     post_alp = alphas.copy()
     for lm in lm_list:
         post_alp[lm.idx_fix] += lm.z_fix
     for z, i in zip(zs, basis_is):
         post_alp[lm_list[i].idx_var] += z
 
-    # initialise neighbour info
+    # initialise neighbour info for each LatentMult
     nbor_arr = [None for _ in basis_is]
     nbps_arr = [None for _ in basis_is]
     for idx, z in enumerate(zs):
         j = basis_is[idx]
-        nbor_arr[idx], nbps_arr[idx] = nbor_ps(z, signed_bases[idx],
+        nbor_arr[idx], nbps_arr[idx] = _nbor_ps(z, signed_bases[idx],
                                                post_alp[lm_list[j].idx_var] - z,
                                                logfacts)
 
-    nz = len(basis_is)
-    idxs = list(range(nz))
+    # precompute values for randomly selecting a latent count vector to update
     ns_var = np.array([lm_list[i].n_var for i in basis_is])
     p_cuml = np.cumsum(ns_var)
 
+    # number of times each latent count vector is selected for updating
     zacc_arr = np.zeros(nz, int)
     moves_arr = np.zeros(nz, int)
     
     trace_p = []
     trace_zs = [[] for _ in basis_is]
-    temp_init = 1000
+
+    # temperature setting for prior annealing
+    temp_init = 100
     temp_mult = temp_init / n_burnin if n_burnin else 0
+
     for i in atpbar(range(n_sample + n_burnin),
                     time_track=True,
                     name=f'chain {chain}'):
 
+        # linear multiplicative cooling schedule
         temp = max(1, temp_init / (1+temp_mult*i)) if n_burnin else 1
+
+        # reset acceptance and proposal counts for each LatentMult
         if i == n_burnin:
             zacc_arr = np.zeros(nz, int)   
             moves_arr = np.zeros(nz, int)
-            post_burnin = time()
 
-        # update z     
+        # select latent count vector to propose update for
         r = p_cuml[-1] * (1 - rng.random(size=cyc_len))
         rand_idxs = np.searchsorted(p_cuml, r).astype(int)
-        mh_rands = np.log(rng.random(size=cyc_len))
+
+        # log-uniform random values for M-H steps
+        mh_rands = np.log(rng.random(size=cyc_len)) * temp
 
         for idx, mh_rand in zip(rand_idxs, mh_rands): 
             j = basis_is[idx]
@@ -355,17 +461,23 @@ def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
 
             a0 = post_alp[lm_list[j].idx_var] - zs[idx]
             currp_arr = gammaln(a0 + nbor).sum(axis=1) - nbps_arr[idx]
-            q = nbor[np.argmax(currp_arr - np.log(-np.log(rng.random(size=nbor.shape[0]))))]
+            q = nbor[np.argmax(currp_arr - 
+                               np.log(-np.log(rng.random(size=nbor.shape[0]))))]
 
-            q_nbors, q_nbps = nbor_ps(q, signed_bases[idx], a0, logfacts)
+            q_nbors, q_nbps = _nbor_ps(q, signed_bases[idx], a0, logfacts)
             qp_arr = gammaln(a0 + q_nbors).sum(axis=1) - q_nbps
-            #accept = logsumexp(currp_arr) - logsumexp(qp_arr)
+            accept = (np.logaddexp.reduce(currp_arr) - 
+                      np.logaddexp.reduce(qp_arr))
             
-            currmax = max(currp_arr)
-            qmax = max(qp_arr)
-            accept = np.log(np.exp(currp_arr-currmax).sum()/np.exp(qp_arr-qmax).sum()*np.exp(currmax-qmax)) / temp
+            # currmax = max(currp_arr)
+            # qmax = max(qp_arr)
+            # accept = np.log(np.exp(currp_arr-currmax).sum() /
+            #                 np.exp(qp_arr-qmax).sum() *
+            #                 np.exp(currmax-qmax)) / temp
 
             moves_arr[idx] += 1
+
+            # M-H step
             if mh_rand < accept:     
                 zacc_arr[idx] += 1           
                 zs[idx] = q  
@@ -374,10 +486,11 @@ def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
                 nbps_arr[idx] = q_nbps
 
         if i >= n_burnin:
-            # update p
+            # sample and store p
             p0 = rng.dirichlet(post_alp)
             trace_p.append(p0)
 
+            # store z
             for idx in range(nz):
                 lm = lm_list[basis_is[idx]]
                 tmp = lm.inits[chain].copy()
@@ -385,9 +498,7 @@ def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
                 trace_zs[idx].append(tmp)
 
     output = {'trace_p': np.array(trace_p),
-              'zacc_rate': zacc_arr/moves_arr,
-              'time_excl_tune': time()-post_burnin,
-              'time_incl_tune': time()-t}
+              'zacc_rate': zacc_arr/moves_arr}
     output.update({f'trace_z{basis_is[idx]}': trace_zs[idx] for idx in range(nz)})
 
     #print(sorted(Counter([tuple(arr) for arr in trace_zs[basis_is.index(3)]]).items(), key=lambda t: -t[1]))
@@ -396,22 +507,72 @@ def latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
     return output
 
 
-def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None, target_accept=0.9,
-                          jaxify=False, chains=5, seed=None, postprocessing_chunks=None):  
+def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None, jaxify=False, **kwargs)
+    """
+    Performs Bayesian inference using NUTS for latent multinomial distributions 
+    under a hierarchical PyMC model, where the multinomial probabilities are not
+    shared. NUTS is called via a custom modification of 
+    `pymc.sampling_jax.sample_numpyro_nuts`, which is implemented in
+    `haplm.numpyro_util.sample_numpyro_nuts`, to handle a bug due to the use of
+    GPs with the argument `postprocessing_chunks` in `sample_numpyro_nuts`. 
+    The latent multinomial likelihood for each data point is either calculated 
+    exactly via enumerating all possible latent counts ('exact') or 
+    approximately ('mn_approx') via a multinormal approximation, as specified 
+    through the `methods` argument.
+
+    Parameters
+    ----------
+    p : iterable[pytensor.tensor.var.TensorVariable for 1D-array]
+        Array of multinomial probability vectors, one for each latent 
+        multinomial observation.
+    lm_list : list[haplm.lm_dist.LatentMult]
+        List of `LatentMult` objects storing information about the latent
+        multinomial observations.
+    H : int > 0
+        Number of multinomial categories.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    methods : list[str]
+        List of strings that are either 'exact' or 'mn_approx', whose length is
+        equal to that of `lm_list`, indicating whether the probability mass
+        function of the corresponding latent multinomial distribution is
+        calculated exactly or using a multinormal approximation.
+    model : pymc.Model, optional if in `with` context
+        PyMC model where `p` is defined.
+    jaxify : bool, default False
+        Whether the log joint-likelihood density is computed through `jax` 
+        functions wrapped in a `pytensor.graph.Op`. Setting this to `True` may 
+        speed up compilation but slow down sampling.
+    kwargs :
+        Keyword arguments passed to `haplm.numpyro_util.sample_numpyro_nuts`,
+        such as `chains`, `random_seed`, `target_accept`, and 
+        `postprocessing_chunks`. The last keyword argument can be set to a 
+        positive integer to reduce memory usage at the end of MCMC sampling.
+
+    Returns
+    -------
+    arviz.InferenceData
+        An ArviZ ``InferenceData`` object that contains the posterior samples.
+    """
     model = modelcontext(model)
 
-    # check if no need for approximation nor discrete sampling
+    # if all latent counts are uniquely determined, use exact calculation
     for i, lm in enumerate(lm_list):
         if not lm.idx_var.size or not lm.amat_var.size:
             methods[i] = 'exact'
     
     exact_is = [i for i, method in enumerate(methods) if method=='exact']
-    basis_is = [i for i, method in enumerate(methods) if method=='basis']
     mn_is = [i for i, method in enumerate(methods) if method=='mn_approx']
-    assert len(exact_is)+len(basis_is)+len(mn_is) == len(lm_list)
+    assert len(exact_is)+len(mn_is) == len(lm_list), (
+        "Method names must be `exact` or `mn_approx`")
 
-    logfacts = scipy.special.gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2))
+    # get log-factorial values for LatentMult with exact method
+    if exact_is:
+        logfacts = gammaln(np.arange(1, max(lm_list[i].n_var for i in exact_is)+2))
 
+    # using JAX
     if jaxify:
         logjoint_fn = lambda p: (sum(lm_list[i].loglike_mn_jax(p[i]) for i in mn_is)
                                  + sum(lm_list[i].loglike_exact_jax(p[i], logfacts) for i in exact_is))
@@ -434,21 +595,17 @@ def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None
         def logjoint_dispatch(op, **kwargs):
             return logjoint_fn  
 
+    # not using JAX
     else:
         logjoint = lambda p: (sum(lm_list[i].loglike_mn(p[i]) for i in mn_is)
                               + sum(lm_list[i].loglike_exact(p[i], logfacts) for i in exact_is))
 
     # inference
-
-    if basis_is:
-        raise NotImplementedError
-
     with model:
         logjoint_var = pm.Potential('logjoint', logjoint(p))
-    
-    with model:
-        idata = sample_numpyro_nuts(draws=n_sample, tune=n_burnin, chains=chains, target_accept=target_accept,
-                                    random_seed=seed, postprocessing_chunks=postprocessing_chunks)
+
+        idata = haplm.numpyro_util.sample_numpyro_nuts(draws=n_sample, tune=n_burnin, **kwargs)
+
     print('', file=sys.stderr)
 
-    return idata  
+    return idata

@@ -1,48 +1,13 @@
+"""
+Utility functions related to haplotypes.
+"""
+
 import numpy as np
 import pytensor
 import pulp
 from haplm.hippo_aeml import run_AEML
 
 solver = pulp.apis.SCIP_CMD(msg=False)
-
-
-def encode_amat(amat):
-    """
-    Encodes a binary matrix into a tuple of integers.
-    
-    Parameters
-    ----------
-    amat : 2D-array[0,1]
-        Matrix to encode.
-        
-    Returns
-    -------
-    tuple[int]
-        A tuple consisting of the number of rows of `amat`, and each column of 
-        `amat` interpreted as a binary number.
-    """
-    r, _ = amat.shape
-    return tuple([r] + list(np.dot(1<<np.arange(r)[::-1], amat)))
-
-
-def decode_amat(code):
-    """
-    Decodes a tuple as the result of a binary matrix encoded by `encode_amat`.
-    
-    Parameters
-    ----------
-    code : tuple[int]
-        Output of `encode_amat`.
-        
-    Returns
-    -------
-    2D-array[0,1]
-        Decoded binary matrix.
-    """
-    return np.transpose([np.fromstring(' '.join(np.binary_repr(num)
-                                                  .zfill(code[0])),
-                                                sep=' ', dtype=int)
-                         for num in code[1:]]).astype(pytensor.config.floatX)
 
 
 def mat_by_marker(G):

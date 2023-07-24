@@ -1,8 +1,8 @@
 # Modifications to HIPPO and AEML
 
-Yong See Foo, July 2023
+*Yong See Foo, July 2023*
 
-HIPPO [[1]](#1) and AEML [[2]](#2) are haplotype frequency estimation methods based on pooled genetic data, with programs available [here](https://www.mv.helsinki.fi/home/mjxpirin/download.html). HIPPO is a Bayesian method that is able to sample the list of input haplotypes; AEML is a fast frequentist method that requires the list of input haplotypes to be specified. This README documents modifications performed for better comparison with proposed alternatives to inferring haplotype frequencies from pooled genetic data.
+HIPPO [[1]](#1) and AEML [[2]](#2) are haplotype frequency estimation methods based on pooled genetic data, with the original programs available [here](https://www.mv.helsinki.fi/home/mjxpirin/download.html). HIPPO is a Bayesian method that samples the list of input haplotypes as part of its MCMC procedure; AEML is a fast frequentist method that requires the list of input haplotypes to be specified. This README documents modifications implemented for better comparison with proposed alternatives for inferring haplotype frequencies from pooled genetic data.
 
 ## Remove assumption of diploid individuals
 HIPPO and AEML are both written for analysing human haplotype data, where each individual carries two haplotypes. This assumption is removed, and so haplotypes of haploid organisms can also be handled. In this modified version, the first number in every line of the input `data_file` is no longer the number of individuals in a pool, but the number of haplotype samples in a pool.
@@ -11,7 +11,7 @@ HIPPO and AEML are both written for analysing human haplotype data, where each i
 HIPPO and AEML both rely on a multinormal approximation, whose covariance matrix may be non-singular for certain values of haplotype frequencies. In this modified version, there is an option for a small stabilising constant to be added to the diagonal of the covariance matrices.
 
 ## AEML: Include estimates larger than 1e-3 in final output
-The original version of AEML only outputs haplotype frequencies that are larger than 1e-3. This restriction has been removed.
+The original version of AEML only outputs haplotype frequencies that are larger than 1e-3. In this modified version, frequency estimates of all input haplotypes are reported.
 
 ## HIPPO: Record trace and implement thinning
 The original version of HIPPO only reports the posterior mean and variance as the chain statistics. In this modified version, there is an option to report the full trace to obtain other statistics (e.g. effective sample sizes) downstream. The chain produced by HIPPO may have very high autocorrelation, so there is an option for thinning to reduce the number of samples recorded by the trace.

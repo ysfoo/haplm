@@ -141,16 +141,18 @@ hippo_aeml/AEML
 4ti2-files/*
 
 # raw data
-*.pkl
 *.netcdf
 *.npy
+*.pkl
+*.prob
 *.xlsx
 *.xls
 
 # images
+*.jpeg
 *.png
 *.tif
-*.jpeg
+
 
 # output files
 *.out

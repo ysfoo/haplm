@@ -1,12 +1,12 @@
 # HapLM: Bayesian inference for pooled <ins>hap</ins>lotype data using <ins>l</ins>atent <ins>m</ins>ultinomials
 
-This module implements MCMC methods for latent multinomial distributions, see [[1]](#1) for details. The key application is for pooled genetic data, where pools may report counts of incomplete haplotypes, which each correspond to a subset of full haplotypes. There are 3 proposed methods, all of which can be used either a setting where the multinomial frequencies are shared across all pools, or a hierarchical setting where the multinomial frequencies are given a hierarchical prior. According to the names given in [[1]](#1), the proposed methods are:
+This module implements MCMC methods for latent multinomial distributions, see [[1]](#1) for details. The key application is for pooled genetic data, where counts of incomplete haplotypes are reported for separate pools. Each incomplete haplotype corresponds to a subset of full haplotypes, and the number of full haplotypes per pool are multinomially distributed. The observation of partial sums of these multinomial counts leads to a latent multinomial model. There are 3 proposed methods, all of which can be used either under a setting where the multinomial frequencies are shared across all pools, or under a hierarchical setting where the multinomial frequencies are given a hierarchical prior. According to the method names given in [[1]](#1), the proposed methods are:
 
 - *MCMC-Exact*. All possible latent counts that are compatible with observed data ...
 - *MCMC-Approx*. ...
 - *LC-Sampling*. ...
 
-The proposed methods are implemented under `haplm/`. Two existing methods, HIPPO [[2]](#2) and AEML [[3]](#3), are presented with modifictions under `hippo_aeml/`; see `hippo_aeml/README.md` for details. The existing methods are written only for the setting where multinomial frequencies are shared.
+The proposed methods are implemented under `haplm/`. Two existing methods, HIPPO [[2]](#2) and AEML [[3]](#3), are presented with modifictions under `hippo_aeml/`; see `hippo_aeml/README.md` for details. The existing methods are written only for the setting where multinomial frequencies are shared, and the incomplete haplotypes are restricted to be information on each marker separately.
 
 Comparisons between the proposed and existing methods, and further examples for the hierarchical case are provided under `test/`:
 
@@ -14,6 +14,8 @@ Comparisons between the proposed and existing methods, and further examples for 
 - `encode` ...
 - `time-series` ...
 - `dhps` ...
+
+There is also a comparison of an exact and an approximate (multinormal) likelihood for a toy example of the latent multinomial distribution under `mn_acc`, which demonstrates cases where the multinormal approximation breaks down.
 
 This project is licensed under the terms of the GNU General Public License v3.0.
 
@@ -36,7 +38,7 @@ gcc hippo.c -o hippo -lgsl -lgslcblas -lm
 gcc AEML.c -o AEML -lgsl -lgslcblas -lm
 ```
 
-To run the spatiotemporal example under `test/dhps/`, these further dependencies have to be installed:
+Further dependencies are required to run the spatiotemporal example under `test/dhps/`:
 ```
 conda install -c conda-forge cartopy xlrd
 ```

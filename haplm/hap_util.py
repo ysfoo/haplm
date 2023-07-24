@@ -3,7 +3,6 @@ Utility functions related to haplotypes.
 """
 
 import numpy as np
-import pytensor
 import pulp
 from haplm.hippo_aeml import run_AEML
 

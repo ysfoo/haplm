@@ -1,3 +1,5 @@
+### Generated exclusions
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -128,15 +130,17 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Non-code files in hippo_aeml
-hippo_aeml/*
-!hippo_aeml/*.c
-!hippo_aeml/*README*
+
+### Custom exclusions
+
+# hippo_aeml executables
+hippo_aeml/hippo
+hippo_aeml/AEML
 
 # 4ti2 files
 4ti2-files/*
 
-# data
+# raw data
 *.pkl
 *.netcdf
 *.npy

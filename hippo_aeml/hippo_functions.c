@@ -1,3 +1,11 @@
+/*
+   Author: Matti Pirinen
+
+   Modified by Yong See Foo, July 2023
+
+   See README for modification details.
+*/
+
 void print_final_results(FILE *out, FILE *in, int n_loci, double tol)
 {
   int i,nhaps=0;

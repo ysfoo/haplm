@@ -47,6 +47,13 @@ See ? for further details of the model.
 */
 
 
+/*
+   Modified by Yong See Foo, July 2023
+
+   See README for modification details.
+*/
+
+
 
 #include <stdio.h>
 #include <math.h>

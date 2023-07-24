@@ -18,6 +18,8 @@ Author:
 Matti Pirinen
 matti.pirinen@iki.fi
 
+Modified by Yong See Foo, July 2023
+See README.md for modification details.
 
 1.COMPILING AND RUNNING
 ---------------------
@@ -72,6 +74,9 @@ c_new
 c 
 d 
 tol
+stab
+write_trace
+thin
 
 If some of the other labels than those 3 marked with * are not specified,
 then the default values are used for them. Note that the defaults may not 
@@ -98,6 +103,9 @@ c_new (double,>=0) weight of novel haplotype when frequencies are distributed
 c (double,>0) multiplicative constant in Beta-distribution when frequencies are updated
 d (double,>0) additive constant in Beta-distribution when frequencies are updated
 tol (double,>0) prints only haplotypes whose freqs are above 'tol'
+stab (double,>0) diagonal entries of covariance matrix are incremented by 'poolsize*stab' for numerical stability
+write_trace (0 or 1) writes the trace to 'trace.out' if set to 1
+thin (int) MCMC thinning factor
 
 2.2.DATA FILE:
 ----------
@@ -109,13 +117,14 @@ Each row contains 1+'n_loci' entries (integers) separated by white spaces:
 
 poolsize a_1 a_2 ... a_n_loci
 
-where poolsize is an integer telling how many individuals are in the pool
+where poolsize is an integer telling how many haplotype samples are in the pool
 a_i is the count of alleles of type 1 in locus i, for i=1,...,n_loci
 (Alleles are of two types: 0 and 1.)
+Note that for diploid individuals, the number of haplotype samples is double the number of individuals
 
-Example (n_pools=2,n_loci 5, poolsizes=10):
-10 5 8 2 20 4
-10 9 5 0 18 7
+Example (n_pools=2, n_loci 5, poolsizes=20):
+20 5 8 2 20 4
+20 9 5 0 18 7
 
 
 
@@ -157,6 +166,7 @@ results.raw
 results.out
 monitor.out
 MAP.out 
+trace.out
 
 results.raw
 Contains results as collected during the run.
@@ -175,7 +185,11 @@ posterior_density likelihood ? ?
 
 
 MAP.out
-Maximum a posteriori results.
+Maximum a posteriori results; first row is density, followed by the estimator.
+
+trace.out
+Contains the MCMC trace.
+Each row consists of pairs of (haplotype index, frequency estimate)
 
 3.2 OUTPUT ON SCREEN
 --------------------
@@ -199,7 +213,7 @@ Four counts of accepted/rejected attempts are shown for updates of
 4. substitution of a haplotype by another, 
 respectively.
 
-Finally acceptance ratios for these four types of updates are shown:
+Then, the acceptance ratios for these four types of updates are shown:
 
 Acceptance ratios:0.09235 0.00095 0.00085 0.34955
 
@@ -207,6 +221,8 @@ And details on how many iterations were legal in the sense of
 data being in the span of covariance matrix (see article):
 
 accepted_iterations=10000, move away=0, move in=0
+
+Finally, the time taken after the burn-in period is shown.
 
 4. CONTACT INFORMATION
 ----------------------

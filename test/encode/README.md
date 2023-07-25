@@ -14,4 +14,4 @@ gen_sim_data(n_pools=20, n_markers=8, pool_size=50, n_datasets=100, data_dir='..
 4. Perform inference with HIPPO, AEML, MCMC-Approx, and LC-Sampling with the scripts `inference_hippo.py`, `inference_aeml.py`, `inference_mn_approx.py`, and `inference_cgibbs.py` respectively.
 5. The results are plotted in `results.ipynb`.
 
-To avoid a long runtime, you may wish to change the number of datasets throughout all scripts to a small number (e.g. 5). Depending on your computational resources, you may want to adjust to number of MCMC chains and CPU cores used.
+To avoid a long runtime, you may wish to change the number of datasets throughout all scripts to a small number (e.g. 5). 

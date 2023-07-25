@@ -21,10 +21,12 @@ This project is licensed under the terms of the GNU General Public License v3.0.
 
 ## Setup
 
-Create a [conda](https://docs.conda.io/en/latest/) environment and with the required dependencies:
+The preferred method of installation is [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge), a more reliable clone of [Conda](https://docs.conda.io/en/latest/). See [here](https://mamba.readthedocs.io/en/latest/user_guide/mamba.html#mamba) for a user guide to Mamba. 
+
+Create a mamba environment and with the required dependencies:
 ```
-conda create -c conda-forge -n [YOUR_ENV_NAME] 4ti2 atpbar numpyro pulp "pymc>=5" "sympy>=1.12"
-conda activate [YOUR_ENV_NAME]
+mamba create -n [YOUR_ENV_NAME] 4ti2 atpbar numpyro pulp "pymc>=5" "sympy>=1.12"
+mamba activate [YOUR_ENV_NAME]
 ```
 
 To install the core funtionality as a module, clone the repository and run the following command from the root directory of this repository:
@@ -40,8 +42,17 @@ gcc AEML.c -o AEML -lgsl -lgslcblas -lm
 
 Further dependencies are required to run the spatiotemporal example under `test/dhps/`:
 ```
-conda install -c conda-forge cartopy xlrd
+mamba install cartopy xlrd
 ```
+
+## Tips
+
+Depending on your computational resources, you may want to adjust to number of MCMC chains and CPU cores used. In particular, there is an overhead for multithreaded operations used by PyMC, and [some people recommend setting the environment variables for the number of threads used by libraries such as MKL and OpenMP to 1](https://discourse.pymc.io/t/regarding-the-use-of-multiple-cores/4249). This can be done by editing the terminal configuration file, e.g. ~/.bashrc, or by adding the lines
+```python
+import os
+
+```
+at the very top of the Python script being run.
 
 Some methods run commands from [`4ti2`](https://4ti2.github.io/), which requires a directory for `4ti2` files to be stored. It is recommended to a create a directory `4ti2-files/` from the root directory of this repository.
 

@@ -254,7 +254,7 @@ def run_hippo(ns, ys, n_sample, n_burnin, hippo_dir,
         if hap_fn is not None:
             fp.write(f'hap_file {hap_fn}\n')
     
-    if print_chain:
+    if print_chain_num:
         print('Chain', end='')
 
     trace = []
@@ -266,7 +266,7 @@ def run_hippo(ns, ys, n_sample, n_burnin, hippo_dir,
 
     # run chains sequentially because of program limitation
     for chain in range(chains):
-        if print_chain:
+        if print_chain_num:
             print(f' {chain+1}', end='', flush=True)
         
         t = time()
@@ -309,7 +309,7 @@ def run_hippo(ns, ys, n_sample, n_burnin, hippo_dir,
                             if hchar == '1')
                     pmode[h] = float(pstr)
 
-    if print_chain:
+    if print_chain_num:
         print()
 
     posterior = {'p': (['chain', 'draw', 'p_dim'], np.array(trace))}

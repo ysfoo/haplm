@@ -171,7 +171,7 @@ int main(int argc, char* argv[])
   beta_a=par.beta_a;beta_c=par.beta_c;beta_mut_1=par.beta_mut_1;beta_mut_2=par.beta_mut_2;
   alpha=par.alpha;gamma=par.gamma;proba_of_proposing_mutation=par.proba_mut;
 
-  if((in=fopen("seed","r"))==NULL)
+  if((in=fopen("hippo_seed","r"))==NULL)
     gsl_rng_set (rng, time(NULL)); //seed
   else
     {fscanf(in,"%d",&i);gsl_rng_set (rng,i);printf("Using seed %d\n",i);fclose(in);} 
@@ -766,7 +766,7 @@ int main(int argc, char* argv[])
     fclose(out);
     */
     
-    out=fopen("seed","w");
+    out=fopen("hippo_seed","w");
     fprintf(out,"%ld\n",gsl_rng_get(rng));
     fclose(out);
   }

@@ -80,7 +80,8 @@ def decode_amat(code):
 class LatentMult():
     """
     Stores data relevant to a latent multinomial observation. See `prep_amat` 
-    for details about pre-processing details.
+    for details about pre-processing details. Run the `.compute_basis()` method
+    if latent count sampling methods are to be used.
     
     Parameters
     ----------

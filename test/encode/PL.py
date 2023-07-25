@@ -1,6 +1,15 @@
 """
-Perform partition ligation for each datasets simulated based on the 1000 Genomes Project. AEML is
+Perform partition ligation for the 100 datasets simulated based on the 1000 Genomes Project. AEML is
 used as the frequency estimation subroutine for partition ligation.
+
+Input files required:
+- Pool size with observed allele counts for each pool
+  @ '../../data/encode/psize{pool_size}_m{n_markers}_id{ds_idx}.data'
+
+Output files produced:
+- Output of partition ligation; each row consists of integers that are binary encodings of the
+  resulting haplotypes for one dataset
+  @ '../../data/encode/PL.txt'
 """
 
 import numpy as np
@@ -25,7 +34,7 @@ def inithaps_fn(n_markers):
     return np.vstack([np.zeros((1, n_markers), dtype=int), np.eye(n_markers, dtype=int)])
 
 failed = [] # 1-based indices of datasets for which PL-AEML failed
-with open('../../data/encode/tmp.txt', 'w') as fp:
+with open('../../data/encode/PL.txt', 'w') as fp:
     for ds_idx in range(1, n_datasets+1):
         fn_prefix = f'../../data/encode/psize{pool_size}_m{n_markers}_id{ds_idx}'
         ns, ys = parse_sim_data(fn_prefix+'.data')

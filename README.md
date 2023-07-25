@@ -2,32 +2,32 @@
 
 This module implements MCMC methods for latent multinomial distributions, see [[1]](#1) for details. The key application is for pooled genetic data, where counts of incomplete haplotypes are reported for separate pools. Each incomplete haplotype corresponds to a subset of full haplotypes, and the number of full haplotypes per pool are multinomially distributed. The observation of partial sums of these multinomial counts leads to a latent multinomial model. There are 3 proposed methods, all of which can be used either under a setting where the multinomial frequencies are shared across all pools, or under a hierarchical setting where the multinomial frequencies are given a hierarchical prior. According to the method names given in [[1]](#1), the proposed methods are:
 
-- *MCMC-Exact*. All possible latent counts that are compatible with observed data ...
-- *MCMC-Approx*. ...
-- *LC-Sampling*. ...
+- **MCMC-Exact**. An exact method that performs MCMC inference by enumerating all possible latent counts that are compatible with observed data. This is computationally intensive, but is considered the gold standard in terms of accuracy. The MCMC sampler is the No-U-Turn-Sampler (NUTS).
+- **MCMC-Approx**. An approximate method that performs MCMC inference via a multinormal approximation, also using NUTS. In the filenames, this method is named as `mn_approx`. This is similar to the HIPPO [[2]](#2) method, with the key difference being that this method does not sample the list of input haplotypes, and uses NUTS as the MCMC sampler.
+- **LC-Sampling**. An exact method that performs MCMC inference by sampling the latent counts as model parameters under a Metropolis-within-Gibbs scheme. In the filenames, this method is named as `cgibbs` (Collapsed Gibbs) when a conjugate prior is used for the non-hierarchical case. In the hierarchical case, there is no conjugacy and the method is named `gibbs`, and NUTS is used for sampling the continuous model parameters.
 
 The proposed methods are implemented under `haplm/`. Two existing methods, HIPPO [[2]](#2) and AEML [[3]](#3), are presented with modifictions under `hippo_aeml/`; see `hippo_aeml/README.md` for details. The existing methods are written only for the setting where multinomial frequencies are shared, and the incomplete haplotypes are restricted to be information on each marker separately.
 
 Comparisons between the proposed and existing methods, and further examples for the hierarchical case are provided under `test/`:
 
-- `sim_study` ...
-- `encode` ...
-- `time-series` ...
-- `dhps` ...
+- `sim_study` Compare all methods with synthetic datasets over 3 markers (8 possible haplotypes). The pool size is varied across datasets to demonstrate how each method scales with pool size.
+- `encode` Compare all methods except MCMC-Exact with 100 datasets simulated based on [human data from the 1000 Genomes Project](https://www.internationalgenome.org/data-portal/population/CEU). Each datasets covers 8 markers (256 possible haplotypes). Partition ligation is used to determine input haplotypes where appropriate. MCMC-Exact is excluded due to computational reasons.
+- `time-series` Demonstrate a hierarchical use-case for the proposed methods. The synthetic dataset used consists of 30 time points of allele counts over 3 markers (8 haplotypes), where the haplotype frequencies vary over time. The haplotype frequencies are given a Gaussian process (GP) prior.
+- `dhps` Application of MCMC-Exact to a real dataset of genetic data relevant to antimalarial drug resistance, collated by the [Worldwide Antimalarial Resistance Network](https://www.wwarn.org/tracking-resistance/sp-molecular-surveyor). 241 data points are used over 3 markers of the `Pfdhps` gene, where the incomplete haplotypes reported are not the same across data points.
 
 There is also a comparison of an exact and an approximate (multinormal) likelihood for a toy example of the latent multinomial distribution under `mn_acc`, which demonstrates cases where the multinormal approximation breaks down.
 
 This project is licensed under the terms of the GNU General Public License v3.0.
 
-## Installation
+## Setup
 
 Create a [conda](https://docs.conda.io/en/latest/) environment and with the required dependencies:
 ```
-conda create -c conda-forge -n [YOUR_ENV_NAME] atpbar numpyro pulp "pymc>=5" "sympy>=1.12"
+conda create -c conda-forge -n [YOUR_ENV_NAME] 4ti2 atpbar numpyro pulp "pymc>=5" "sympy>=1.12"
 conda activate [YOUR_ENV_NAME]
 ```
 
-To install the core funtionality as a module, run the following command from the root directory of this repository:
+To install the core funtionality as a module, clone the repository and run the following command from the root directory of this repository:
 ```
 pip install .
 ```
@@ -42,6 +42,10 @@ Further dependencies are required to run the spatiotemporal example under `test/
 ```
 conda install -c conda-forge cartopy xlrd
 ```
+
+Some methods run commands from [`4ti2`](https://4ti2.github.io/), which requires a directory for `4ti2` files to be stored. It is recommended to a create a directory `4ti2-files/` from the root directory of this repository.
+
+More efficient integer programming solvers can speed up the pre-processing phase of the proposed methods. This can be configured by specifying a [`pulp`](https://coin-or.github.io/pulp/) solver when creating `LatentMult` objects.
 
 ## References
 

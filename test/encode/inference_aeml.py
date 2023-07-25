@@ -53,7 +53,8 @@ for ds_idx in range(1, n_datasets+1):
         ns, ys = parse_sim_data(fn_prefix+'.data')
 
         print(f'AEML for set {ds_idx}: ', end='')
-        aeml_out = run_AEML(ns, ys, aeml_dir, trials=trials, stab=1e-9, hap_fn=hap_fn)
+        aeml_out = run_AEML(ns, ys, aeml_dir, trials=trials,
+                            seed=pool_size^ds_idx, stab=1e-9, hap_fn=hap_fn)
         if aeml_out is None:
             failed.append(ds_idx)
             with open('AEML.log') as fp:

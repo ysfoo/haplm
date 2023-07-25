@@ -318,9 +318,9 @@ def concat_haps(pest1, pest2, haps1, haps2, thres, maxhaps=None,
 
     inithaps_set = {tuple(hap) for hap in inithaps}
     hap_list = [list(hap) for hap in inithaps_set]
-    to_add = maxhaps - (len(inithaps_set) 
-                        if maxhaps is not None 
-                        else len(hap_pairs))
+    to_add = (maxhaps - len(inithaps_set) 
+              if maxhaps is not None 
+              else len(hap_pairs))
 
     for idx1, idx2 in hap_pairs:
         if to_add <= 0:

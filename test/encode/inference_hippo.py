@@ -60,8 +60,8 @@ for ds_idx in range(1, n_datasets+1):
 		H = len(hap_list)
 
 		print(f'MCMC for set {ds_idx}: ', end='')
-		idata = run_hippo(ns, ys, n_sample, n_burnin, hippo_dir,
-			              thin=thin, chains=chains, hap_fn=hap_fn)
+		idata = run_hippo(ns, ys, n_sample, n_burnin, hippo_dir, 
+			                seed=pool_size^ds_idx, thin=thin, chains=chains, stab=1e-9, hap_fn=hap_fn)
 		idata.to_netcdf(fn_prefix+'_hippo.netcdf')
 
 		# miness_lst[H-1].append(az.ess(idata, var_names=['p'])['p'].values.min())

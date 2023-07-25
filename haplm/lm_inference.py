@@ -507,7 +507,7 @@ def _latent_mult_sample_cgibbs(lm_list, H, n_sample, n_burnin, alphas,
     return output
 
 
-def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None, jaxify=False, **kwargs)
+def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None, jaxify=False, **kwargs):
     """
     Performs Bayesian inference using NUTS for latent multinomial distributions 
     under a hierarchical PyMC model, where the multinomial probabilities are not

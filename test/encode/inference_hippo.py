@@ -18,7 +18,7 @@ import numpy as np
 from time import time
 import traceback
 
-from haplm.hap_util import mat_by_marker, str_to_num, num_to_str
+from haplm.hap_util import num_to_str
 from haplm.hippo_aeml import run_hippo
 from sim_data import parse_sim_data
 

@@ -24,7 +24,6 @@ import traceback
 
 from haplm.lm_dist import LatentMult, find_4ti2_prefix
 from haplm.lm_inference import latent_mult_mcmc_cgibbs
-from haplm.hap_util import mat_by_marker, str_to_num, num_to_str
 from sim_data import parse_sim_data
 
 import numpyro

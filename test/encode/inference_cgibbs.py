@@ -75,9 +75,9 @@ for ds_idx in range(1, n_datasets+1):
 
         print(f'MCMC for set {ds_idx}: {H} haplotypes')
         t = time()
-        idata = latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin,
+        idata = latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, chains,
                                         cyc_len=5*n_sum, alphas=0.1*np.ones(H),
-                                        chains=chains, cores=cores, random_seed=ds_idx)
+                                        cores=cores, random_seed=ds_idx)
         mcmc_time = time() - t
 
         idata.attrs['preprocess_time'] = pre_time

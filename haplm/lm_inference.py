@@ -31,7 +31,11 @@ import pytensor.tensor as pt
 from pytensor.graph import Apply, Op
 from pytensor.link.jax.dispatch import jax_funcify
 
-import haplm.numpyro_util
+import jax
+from jax import jit
+import jax.numpy as jnp
+
+from haplm.numpyro_util import sample_numpyro_nuts, sample_numpyro_nuts_gibbs
 
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
@@ -194,8 +198,8 @@ def latent_mult_mcmc(lm_list, H, n_sample, n_burnin, methods,
     return idata  
 
 
-def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len=None,
-                            alphas=None, chains=5, cores=1, random_seed=None):
+def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, chains, 
+                            cyc_len=None, alphas=None, cores=1, random_seed=None):
     """
     Performs Bayesian inference for latent multinomial distributions which share 
     the same multinomial probabilities using a collapsed Metropolis-within-Gibbs
@@ -221,14 +225,14 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len=None,
         Number of inference iterations.
     n_burnin : int > 0
         Number of burn-in iterations.
+    chains : int > 0
+        The number of MCMC chains to run.
     cyc_len : int > 0, optional
         Number of latent count updates per MCMC iteration. Set to 5 times the 
         sum of all pool sizes if unspecified.
     alphas : list[float > 0], optional
         List of Dirichlet concentrations for the prior to the multinomial 
         probabilities. Set to a uniform prior if unspecified.
-    chains : int > 0, default 5
-        The number of MCMC chains to run.
     cores : int > 0, default 1
         The number of chains to run in parallel.
     random_seed : int, optional
@@ -302,10 +306,8 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len=None,
         nullspace = []
         # sympy nullspace may be rationals instead, convert to integer vectors
         for vec in amat[:,lowess_list].nullspace():
-            denoms = [x.q for x in vec if type(x) == sympy.Rational]
-            if len(denoms) == 0:
-                arr = np.array(vec, int)
-            elif len(denoms) == 1:
+            denoms = [x.q for x in vec]
+            if len(denoms) == 1:
                 arr = np.array(vec*denoms[0], int)
             else:
                 arr = np.array(vec*sympy.ilcm(*denoms), int)
@@ -611,8 +613,180 @@ def hier_latent_mult_mcmc(p, lm_list, H, n_sample, n_burnin, methods, model=None
     with model:
         logjoint_var = pm.Potential('logjoint', logjoint(p))
 
-        idata = haplm.numpyro_util.sample_numpyro_nuts(draws=n_sample, tune=n_burnin, **kwargs)
+        idata = sample_numpyro_nuts(draws=n_sample, tune=n_burnin, **kwargs)
 
     print('', file=sys.stderr)
+
+    return idata
+
+
+def hier_latent_mult_mcmc_gibbs(p, lm_list, H, n_sample, n_burnin, chains, n_reps=None,
+                                thinning=1, model=None, **kwargs):
+    """
+    Performs Bayesian inference using Metropolis-within-NUTS for latent multinomial distributions 
+    under a hierarchical PyMC model, where the multinomial probabilities are not shared. The latent 
+    counts are sampled alternatingly with the continuous parameters. The sampler is called through
+    `haplm.numpyro_util.sample_numpyro_nuts_gibbs`.
+
+    Parameters
+    ----------
+    p : iterable[pytensor.tensor.var.TensorVariable for 1D-array]
+        Array of multinomial probability vectors, one for each latent multinomial observation.
+    lm_list : list[haplm.lm_dist.LatentMult]
+        List of `LatentMult` objects storing information about the latent multinomial observations.
+    H : int > 0
+        Number of multinomial categories.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    chains : int > 0
+        The number of MCMC chains to run.
+    n_reps : list[int > 0]
+        List of number of times to update each latent count vector during a MCMC iteration. Set to 5 
+        times each pool size if unspecified.
+    thinning : int > 0, default 1
+        Positive integer that controls the fraction of post-warmup samples that are retained.
+    model : pymc.Model, optional if in `with` context
+        PyMC model where `p` is defined.
+    kwargs :
+        Keyword arguments passed to `haplm.numpyro_util.sample_numpyro_nuts_gibbs`, such as 
+        `random_seed`, `target_accept`, and `postprocessing_chunks`. The last keyword argument can 
+        be set to a positive integer to reduce memory usage at the end of MCMC sampling.
+
+    Returns
+    -------
+    arviz.InferenceData
+        An ArviZ ``InferenceData`` object that contains the posterior samples.
+    """
+    model = modelcontext(model)
+
+    with model:
+        zs = pm.Multinomial('z', n=np.array([lm.n for lm in lm_list]), p=p)
+
+    N = len(lm_list)
+    logfacts = jnp.array(gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2)))
+    temp_init = 100
+    temp_mult = 100 / n_burnin
+
+    if n_reps is None:
+        n_reps = [5*lm.n_var for lm in lm_list]
+
+    def make_site_fn(lm_list, i):
+        '''Create function for updating one latent count vector.'''
+        lm = lm_list[i]
+        idx_var = jnp.array(lm.idx_var)    
+        bvecs = jnp.array(np.vstack([lm.basis, -lm.basis]))
+        
+        @jit
+        def site_fn(hmc_i, z_full, logp, key):
+            logp_var = logp[idx_var]
+            z0 = z_full[idx_var]
+            temp = jnp.maximum(1, temp_init/(1+temp_mult*hmc_i))
+            def fn_to_rep(i, state):
+                z0, opts0, ws0, key = state
+                opt_key, mh_key, next_key = jax.random.split(key, 3)
+                z = jax.random.choice(opt_key, opts0, p=ws0)
+                opts = z + bvecs
+                ws = jnp.where((opts >= 0).all(axis=1), jnp.exp(jnp.dot(opts, logp_var) - logfacts[opts].sum(axis=1)), 0)
+                return_new = jnp.log(jax.random.uniform(mh_key)) < jnp.log(ws0.sum()/ws.sum()) / temp
+                #jax.debug.print('z {z}\nopts0 {opts0}\nws0 {ws0}', opts0=opts0, z=z, ws0=ws0)
+                return jax.lax.cond(return_new,
+                                    lambda x: (z, opts, ws, next_key),
+                                    lambda x: (z0, opts0, ws0, next_key),
+                                    None)
+            
+            opts0 = z0 + bvecs
+            ws0 = jnp.where((opts0 >= 0).all(axis=1), jnp.exp(jnp.dot(opts0, logp_var) - logfacts[opts0].sum(axis=1)), 0)
+            return z_full.at[idx_var].set(jax.lax.fori_loop(0, n_reps[i], fn_to_rep, (z0, opts0, ws0, key))[0])
+            
+        return site_fn
+
+
+    def make_gibbs_fn(lm_list):
+        '''Create function for updating all latent count vectors.'''
+        gibbs_fns = []
+        for i, lm in enumerate(lm_list):
+            if not lm.idx_var.size:
+                gibbs_fns.append(lambda z, logp, key: z)
+            else:
+                gibbs_fns.append(make_site_fn(lm_list, i))
+        
+        def tmp_gibbs_fn(hmc_i, rng_key, gibbs_sites, hmc_sites):
+            keys = jax.random.split(rng_key, N)
+            log_ps = jnp.log(hmc_sites['p'])
+            new_z = {'z': jnp.array([gibbs_fns[i](hmc_i, gibbs_sites['z'][i], log_ps[i], keys[i]).astype('int64') 
+                                     for i in range(N)])} 
+            # jax.debug.print("{new_z}", new_z=new_z)
+            return new_z
+        
+        return tmp_gibbs_fn
+
+
+    def update_gibbs_fn(samples, n_burnin, gibbs_sites, gibbs_idxs):
+        '''Augment Markov bases and call `make_gibbs_fn` again to get `gibbs_fn`.'''
+        samples_idx = gibbs_idxs[gibbs_sites.index('z')]
+        posterior = {'z': (('chain', 'draw', 'z_dim_0', 'z_dim_1'), samples[samples_idx])}
+        ess = az.ess(xarray.Dataset(posterior).sel(draw=np.arange(n_burnin // 2, n_burnin)))['z'].values
+        for i, lm in enumerate(lm_list):
+            if not lm.idx_var.size:
+                continue
+            nz = len(lm.idx_var)
+            zess = ess[i, lm.idx_var]
+            order = list(np.argsort(zess))
+            dist_best = 0.2*np.sum(np.abs(zess-np.median(zess)))
+            lowess_list = order
+            for div in range(1, len(order)):
+                dist = sum(np.sum(np.abs(vals-np.median(vals)))
+                           for vals in (zess[order[:div]], zess[order[div:]]))
+                if dist < dist_best:
+                    dist_best = dist
+                    lowess_list = order[:div]
+
+            amat = sympy.Matrix(np.vstack([np.ones(nz, int), lm.amat_var.astype(int)]))
+            nspace = []
+            for vec in amat[:,lowess_list].nullspace():
+                denoms = [x.q for x in vec]
+                if len(denoms) == 0:
+                    arr = np.array(vec, int)
+                elif len(denoms) == 1:
+                    arr = np.array(vec*denoms[0], int)
+                else:
+                    arr = np.array(vec*sympy.ilcm(*denoms), int)
+                nspace.append(arr.T[0])
+            nspace = np.vstack(nspace)
+
+            reduced = DM(nspace, ZZ).lll()
+            extras = np.array(reduced.to_Matrix(), int)
+            div = len(lowess_list)
+            for tmp in extras:
+                if np.linalg.norm(tmp) > 5:
+                    continue
+                extra = np.zeros(nz, int)
+                extra[lowess_list] = tmp
+                if not (extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()):
+                    print(lowess_list)
+                    print(lm.amat_var)
+                    print(extra)
+                    print(extras)
+                    import pickle as pkl
+                    with open('tmp.pkl', 'wb') as fp:
+                        pkl.dump(lm, fp)
+                assert (extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()), (
+                        'Augmentation gave invalid vector, please report')
+                if {tuple(row) for row in lm.basis}.isdisjoint({tuple(extra), tuple(-extra)}):
+                    # vector not already in Markov basis
+                    print(f'add basis vector {extra} for data point {i}')
+                    lm.basis = np.vstack([lm.basis, extra])
+        return make_gibbs_fn(lm_list)
+
+
+    gibbs_fn = make_gibbs_fn(lm_list)
+
+    idata, mcmc = sample_numpyro_nuts_gibbs(gibbs_fn, ['z'], [p.name], draws=n_sample, tune=n_burnin, 
+                                            chains=chains, thinning=thinning, model=model,
+                                            initvals=[{'z': np.array([lm.inits[c] for lm in lm_list])} 
+                                                       for c in range(chains)],
+                                            update_gibbs_fn=update_gibbs_fn, **kwargs)
 
     return idata

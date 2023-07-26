@@ -61,9 +61,9 @@ for pool_size in pool_sizes:
 		pre_time = time() - t
 
 		t = time()
-		idata = latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin,
+		idata = latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, chains,
 		                                cyc_len=5*n_sum, alphas=np.ones(H),
-										chains=chains, cores=cores, random_seed=ds_idx^pool_size)
+		                                cores=cores, random_seed=ds_idx^pool_size)
 		mcmc_time = time() - t
 
 		idata.attrs['preprocess_time'] = pre_time

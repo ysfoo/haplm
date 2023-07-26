@@ -101,7 +101,7 @@ idata.sample_stats.attrs['mcmc_walltime'] = mcmc_time
 idata.posterior = idata.posterior.drop_vars('noise')
 idata.to_netcdf(f'../../data/time-series/psize50_m3_exact.netcdf')
 
-# simulate predictive distribution
+# simulate posterior predictive distribution
 t_pred = np.arange(0, 20.001, 0.01)
 N_pred = len(t_pred)
 with model:
@@ -117,7 +117,7 @@ np.save(f'../../data/time-series/psize50_m3_exact_pred_samples.npy', pred_sample
 
 # pred_samples = np.load(f'../../data/time-series/psize50_m3_exact_pred_samples.npy')
 
-# summary statistics of predictive distribution
+# summary statistics of posterior predictive distribution
 sumstats = {}
 sumstats['mean'] = pred_samples.mean(axis=0)
 sumstats['sd'] = pred_samples.std(axis=0)

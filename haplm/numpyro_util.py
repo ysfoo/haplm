@@ -138,7 +138,7 @@ def sample_numpyro_nuts(
         specified in the ``draws`` argument.
     chains : int, default 4
         The number of chains to sample.
-    target_accept : float in [0, 1].
+    target_accept : float in [0, 1], default 0.8
         The step size is tuned such that we approximate this acceptance rate. Higher
         values like 0.9 or 0.95 often work better for problematic posteriors.
     random_seed : int, RandomState or Generator, optional
@@ -393,7 +393,7 @@ def sample_numpyro_nuts_gibbs(
         retained.
     chains : int, default 4
         The number of chains to sample.
-    target_accept : float in [0, 1].
+    target_accept : float in [0, 1], default 0.8
         The step size is tuned such that we approximate this acceptance rate. Higher
         values like 0.9 or 0.95 often work better for problematic posteriors.
     random_seed : int, RandomState or Generator, optional

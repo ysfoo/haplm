@@ -59,6 +59,8 @@ Some methods run commands from [`4ti2`](https://4ti2.github.io/), which requires
 
 More efficient integer programming solvers can speed up the pre-processing phase of the proposed methods. This can be configured by specifying a [`pulp`](https://coin-or.github.io/pulp/) solver when creating `LatentMult` objects.
 
+Sampling with NUTS may sometimes take a long time (>5 minutes) to compile, which tends to occur for the multinormal approximation. If a long compilation time is observed, consider setting the `jaxify` argument (e.g. in `haplm.lm_inference.latent_mult_mcmc`) to `True`. This should speed up compilation at the cost of slower sampling.
+
 ## References
 
 <a id="1">[1]</a> 

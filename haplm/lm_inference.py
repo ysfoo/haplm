@@ -317,14 +317,21 @@ def latent_mult_mcmc_cgibbs(lm_list, H, n_sample, n_burnin, cyc_len=None,
         # find short basis vectors to nullspace using LLL algorithm
         reduced = DM(nullspace, ZZ).lll()
         extras = np.array(reduced.to_Matrix(), int)
-        div = len(lowess_list)
         # skip vectors that have Euclidean norm > 5 as the accept prob. would often be low
         for tmp in extras:
             if np.linalg.norm(tmp) > 5:
                 continue
             extra = np.zeros(nz, int)
             extra[lowess_list] = tmp
-            assert extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()
+            if not (extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()):
+                print(lowess_list)
+                print(lm.amat_var)
+                print(extra)
+                print(extras)
+                import pickle as pkl
+                with open('tmp.pkl', 'wb') as fp:
+                    pkl.dump(lm, fp)
+            assert (extra.sum() == 0 and (lm.amat_var.dot(extra) == 0).all()), 'Augmentation gave invalid vector, please report'
             if {tuple(row) for row in lm.basis}.isdisjoint({tuple(extra), tuple(-extra)}):
                 # vector not already in Markov basis
                 print(f'add basis vector {extra} for data point {i}')

@@ -70,7 +70,7 @@ for n, y in zip(ns, ys):
     lm_list.append(lm)
 pre_time = time() - t
 
-
+# define GP prior
 with pm.Model() as model:
     sigma = pm.InverseGamma('sigma', alpha=3, beta=1)
     alpha = pm.InverseGamma('alpha', alpha=3, beta=3, shape=H)
@@ -86,9 +86,9 @@ with pm.Model() as model:
                                                axis=-1))
 
 t = time()
-idata, mcmc = hier_latent_mult_mcmc_gibbs(ps, lm_list, H, n_sample, n_burnin, chains, 
-                                          thinning=thinning, model=model, target_accept=0.95,
-                                          random_seed=2023, postprocessing_chunks=25)
+idata = hier_latent_mult_mcmc_gibbs(ps, lm_list, H, n_sample, n_burnin, chains, 
+                                    thinning=thinning, model=model, target_accept=0.95,
+                                    random_seed=2023, postprocessing_chunks=25)
 mcmc_time = time() - t
 
 idata.sample_stats.attrs['preprocess_time'] = pre_time

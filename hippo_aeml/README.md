@@ -22,6 +22,9 @@ This modified version of HIPPO outputs the sampling time excluding the warmup ph
 ## HIPPO: Output maximimum likelihood attained
 This modified version of HIPPO outputs the maximum likelihood density as the first line of `MAP.out` before outputting the maximum likelihood estimate.
 
+## HIPPO: Seed file renamed to `hippo_seed`
+In the original version, the random seed for HIPPO is stored in the file `seed`. This is renamed to `hippo_seed` for consistency with the seed file `AEML_seed` used by AEML.
+
 ## References
 
 <a id="1">[1]</a> 

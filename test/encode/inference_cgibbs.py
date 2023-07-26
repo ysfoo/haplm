@@ -10,8 +10,6 @@ Input files required:
 Output files produced:
 - InferenceData output of LC-Sampling
   @ '../../data/encode/psize{pool_size}_m{n_markers}_id{ds_idx}_cgibbs.netcdf'
-- LatentMult objects storing pre-processing results
-  @ '../../data/encode/psize{pool_size}_m{n_markers}_id{ds_idx}_cgibbs_lm.pkl'
 """
 
 import numpy as np
@@ -19,14 +17,12 @@ import pulp
 # import arviz as az
 
 from time import time
-import pickle as pkl
+# import pickle as pkl
 import traceback
 
 from haplm.lm_dist import LatentMult, find_4ti2_prefix
 from haplm.lm_inference import latent_mult_mcmc_cgibbs
 from sim_data import parse_sim_data
-
-import numpyro
 
 # init for other libraries
 solver = pulp.apis.SCIP_CMD(msg=False)
@@ -43,8 +39,6 @@ chains = 5
 cores = 5
 n_burnin = 500
 n_sample = 500
-
-numpyro.set_host_device_count(chains)
 
 hap_lists = []
 amats = []
@@ -95,8 +89,8 @@ for ds_idx in range(1, n_datasets+1):
         # miness_lst[H-1].append(ess.min())
         # print(ess.min())
 
-        with open(fn_prefix+'_cgibbs_lm.pkl', 'wb') as fp:
-            pkl.dump(lm_list, fp)
+        # with open(fn_prefix+'_cgibbs_lm.pkl', 'wb') as fp:
+        #     pkl.dump(lm_list, fp)
 
     except Exception as e:
         print(traceback.format_exc())

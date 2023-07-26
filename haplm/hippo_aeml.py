@@ -268,7 +268,7 @@ def run_hippo(ns, ys, n_sample, n_burnin, hippo_dir,
             print(f' {chain+1}', end='', flush=True)
         
         t = time()
-        with open('seed', 'w') as fp:
+        with open('hippo_seed', 'w') as fp:
             fp.write(str(seed^chain+1))
 
         # run HIPPO executable

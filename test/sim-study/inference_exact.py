@@ -1,43 +1,52 @@
-import numpy as np
-import pulp
+"""
+Perform MCMC-Exact on synthetic datasets.
+
+Input files required:
+- Pool size with observed allele counts for each pool
+  @ '../../data/sim-study/psize{pool_size}_m{n_markers}_id{ds_idx}.data'
+
+Output files produced:
+- InferenceData output of MCMC-Exact
+  @ '../../data/sim-study/psize{pool_size}_m{n_markers}_id{ds_idx}_exact.netcdf'
+"""
 
 from time import time
-import os
 
 from haplm.lm_dist import LatentMult, find_4ti2_prefix
-from haplm.hap_utils import mat_by_marker
+from haplm.hap_util import mat_by_marker
 from haplm.lm_inference import latent_mult_mcmc
-from sim_data import gen_sim_data, parse_sim_data
+from sim_data import parse_sim_data
+
+import numpy as np
+import pulp
+import numpyro
+# import arviz as az
 
 # init for other libraries
 solver = pulp.apis.SCIP_CMD(msg=False)
 prefix_4ti2 = find_4ti2_prefix()
 
-# parameters for data simulation
+# data parameters
 n_datasets = 5
 n_pools = 20
 n_markers = 3
 H = 2**n_markers # number of haplotypes
-pool_sizes = np.arange(20, 101, 20)
-alphas = np.ones(H)*0.4
-
-amat = mat_by_marker(n_markers)
+pool_sizes = range(20, 101, 20)
 
 # MCMC parameters
-cores = 5
 chains = 5
+cores = 5
 n_burnin = 500
 n_sample = 500
+numpyro.set_host_device_count(cores)
+
+amat = mat_by_marker(n_markers)
 
 for pool_size in pool_sizes:
 	print(f'Pool size = {pool_size}')
 	print('-'*15)
 	for ds_idx in range(1, n_datasets+1):
 		fn_prefix = f'../../data/sim-study/psize{pool_size}_m{n_markers}_id{ds_idx}'
-
-		# if data has not been generated
-		if not os.path.isfile(fn_prefix+'.data'):
-			gen_sim_data(n_pools, n_markers, pool_size, alphas, ds_idx, fn_prefix)
 
 		ns, ys = parse_sim_data(fn_prefix+'.data')
 
@@ -54,12 +63,14 @@ for pool_size in pool_sizes:
 		print(f'MCMC for set {ds_idx}')
 		t = time()
 		idata = latent_mult_mcmc(lm_list, H, n_sample, n_burnin, ['exact']*n_pools,
-			                     chains=chains, cores=cores,
-			                     seeds=np.arange(chains) + (ds_idx ^ pool_size)*chains)
+			                     jaxify=False, chains=chains, random_seed=ds_idx^pool_size)
 		mcmc_time = time() - t
 
-		idata.sample_stats.attrs['preprocess_time'] = pre_time
-		idata.sample_stats.attrs['mcmc_walltime'] = mcmc_time
+		idata.attrs['preprocess_time'] = pre_time
+		idata.attrs['mcmc_walltime'] = mcmc_time
+
+		# ess = az.ess(idata, var_names=['p'])['p'].values
+		# print(ess.min())
 
 		idata.to_netcdf(fn_prefix+'_exact.netcdf')
 	print()

@@ -38,9 +38,10 @@ pool_size = 50
 
 # MCMC parameters
 chains = 5
+cores = 5
 n_burnin = 500
 n_sample = 500
-numpyro.set_host_device_count(chains)
+numpyro.set_host_device_count(cores)
 
 hap_lists = []
 amats = []

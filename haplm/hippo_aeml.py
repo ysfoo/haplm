@@ -6,11 +6,9 @@ import numpy as np
 from scipy.stats import entropy
 
 from time import time
-import os
-import pickle as pkl
 import subprocess as sp
-# import arviz as az
-# import xarray
+import arviz as az
+import xarray
 
 def run_AEML(ns, ys, aeml_dir, trials=10,
              print_trial=True, seed=None, n_iterations=10**4, stab=None,

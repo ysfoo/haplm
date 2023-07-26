@@ -151,9 +151,9 @@ currently restricted to situations where n_loci is at most 10.
 
 2.4. SEED FILE
 --------------
-Hippo reads the seed for the random number generator (RNG) from file 'seed'
+Hippo reads the seed for the random number generator (RNG) from file 'hippo_seed'
 if such a file exists. Otherwise, the RNG is initialized from the current time.
-Hippo writes a new seed to file 'seed' after each run, which makes sure 
+Hippo writes a new seed to file 'hippo_seed' after each run, which makes sure 
 that separate runs of Hippo use different seeds by default. 
 
 

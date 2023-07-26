@@ -50,7 +50,8 @@ mamba install cartopy xlrd
 Depending on your computational resources, you may want to adjust to number of MCMC chains and CPU cores used. In particular, there is an overhead for multithreaded operations used by PyMC, and [some people recommend setting the environment variables for the number of threads used by libraries such as MKL and OpenMP to 1](https://discourse.pymc.io/t/regarding-the-use-of-multiple-cores/4249). This can be done by editing the terminal configuration file, e.g. ~/.bashrc, or by adding the lines
 ```python
 import os
-
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
 ```
 at the very top of the Python script being run.
 

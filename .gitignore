@@ -159,3 +159,6 @@ hippo_aeml/AEML
 
 # unused files
 unused/*
+
+# local backups
+*backup*

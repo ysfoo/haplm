@@ -58,7 +58,7 @@ for pool_size in pool_sizes:
 				            solver, prefix_4ti2)
 			lm_list.append(lm)
 		pre_time = time() - t
-		print(pre_time, flush=True)
+		# print(pre_time, flush=True)
 
 		print(f'MCMC for set {ds_idx}')
 		t = time()

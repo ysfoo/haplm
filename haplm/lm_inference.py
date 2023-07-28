@@ -643,8 +643,8 @@ def hier_latent_mult_mcmc_gibbs(p, lm_list, H, n_sample, n_burnin, chains, n_rep
     chains : int > 0
         The number of MCMC chains to run.
     n_reps : list[int > 0]
-        List of number of times to update each latent count vector during a MCMC iteration. Set to 5 
-        times each pool size if unspecified.
+        List of number of times to update each latent count vector during a MCMC iteration. Set to 
+        10 times each pool size if unspecified.
     thinning : int > 0, default 1
         Positive integer that controls the fraction of post-warmup samples that are retained.
     model : pymc.Model, optional if in `with` context
@@ -670,7 +670,7 @@ def hier_latent_mult_mcmc_gibbs(p, lm_list, H, n_sample, n_burnin, chains, n_rep
     temp_mult = 100 / n_burnin
 
     if n_reps is None:
-        n_reps = [5*lm.n_var for lm in lm_list]
+        n_reps = [10*lm.n_var for lm in lm_list]
 
     def make_site_fn(lm_list, i):
         '''Create function for updating one latent count vector.'''

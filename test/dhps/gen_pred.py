@@ -13,7 +13,7 @@ from haplm.gp_util import GP, SphereGneiting
 from PIL import Image
 
 yr = int(sys.argv[1])
-im = Image.open('../../data/dhps/Africa_pfpr_2000.tif') 
+im = Image.open(f'../../data/dhps/Africa_pfpr_{yr}.tif') 
 pfpr = np.asarray(im)
 pfpr_masked = np.ma.masked_less(pfpr, 0)
     
@@ -66,22 +66,23 @@ with model:
 pred_samples = np.vstack(pred_idata.posterior_predictive.p_pred)
 np.save(f'../../data/dhps/exact_{yr}_pred_samples.npy', pred_samples)
 
-# pred_samples = np.load(f'../../data/dhps/exact_{yr}_pred_samples.npy')
+pred_samples = np.load(f'../../data/dhps/exact_{yr}_pred_samples.npy')
 
 sumstats = {}
 sumstats['mean'] = pred_samples.mean(axis=0)
 sumstats['sd'] = pred_samples.std(axis=0)
 sumstats['median'] = np.median(pred_samples, axis=0)
-# sumstats['mad'] = np.median(np.abs(pred_samples - sumstats['median'][None,:,:]), overwrite_input=True, axis=0)
+sumstats['mad'] = np.median(np.abs(pred_samples - sumstats['median'][None,:,:]), axis=0)
 sumstats['quantiles'] = np.quantile(pred_samples, np.arange(0, 1.01, 0.05), axis=0)
 
 amat = mat_by_marker(3)
 geno_pred_samples = np.dot(pred_samples, amat.T)
 
+sumstats = {}
 sumstats['geno_mean'] = geno_pred_samples.mean(axis=0)
 sumstats['geno_sd'] = geno_pred_samples.std(axis=0)
 sumstats['geno_median'] = np.median(geno_pred_samples, axis=0)
-# sumstats['geno_mad'] = np.median(np.abs(geno_pred_samples - sumstats['geno_median'][None,:,:]), overwrite_input=True, axis=0)
+sumstats['geno_mad'] = np.median(np.abs(geno_pred_samples - sumstats['geno_median'][None,:,:]), axis=0)
 sumstats['geno_quantiles'] = np.quantile(geno_pred_samples, np.arange(0, 1.01, 0.05), axis=0)
 
 with open(f'../../data/dhps/exact_{yr}_sumstats.pkl', 'wb') as fp:

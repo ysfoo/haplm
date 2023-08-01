@@ -31,7 +31,7 @@ chains = 5
 numpyro.set_host_device_count(chains)
 
 prefix_4ti2 = find_4ti2_prefix()
-solver = pulp.apis.COIN_CMD(msg=False) # or SCIP
+solver = pulp.apis.COIN_CMD(msg=False) # change to more efficient solver if available
 
 # download data
 filename = "dhfr_dhps_surveyor_data.xls"

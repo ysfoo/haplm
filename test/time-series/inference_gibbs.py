@@ -111,10 +111,12 @@ with model:
     pred_idata = pm.sample_posterior_predictive(idata, var_names=['p_pred'])
 
 pred_samples = np.vstack(pred_idata.posterior_predictive.p_pred)
-np.save(f'../../data/time-series/psize50_m3_gibbs_pred_samples.npy', pred_samples)
-# np.save('../../data/time-series/psize50_m3_gibbs_pred_samples_tint.npy', pred_samples[:,::100])
 
-# pred_samples = np.load(f'../../data/time-series/psize50_m3_gibbs_pred_samples.npy')
+# save predictive distribution on a dense grid (more memory)
+# np.save(f'../../data/time-series/psize50_m3_gibbs_pred_samples.npy', pred_samples)
+
+# save predictive distribution for integer times (less memory)
+np.save('../../data/time-series/psize50_m3_gibbs_pred_samples_tint.npy', pred_samples[:,::100])
 
 # summary statistics of posterior predictive distribution
 sumstats = {}

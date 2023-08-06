@@ -42,7 +42,7 @@ n_sample = 500
 
 hap_lists = []
 amats = []
-with open('../../data/encode/PL.txt') as fp:
+with open('../../data/encode/PL_mn_approx.txt') as fp:
     for line in fp:
         hap_list = [int(x) for x in line.split()]
         hap_lists.append(hap_list)

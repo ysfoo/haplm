@@ -34,7 +34,7 @@ pool_size = 50
 trials = 10 # number of random initialisations for AEML
 
 hap_lists = []
-with open('../../data/encode/PL.txt') as fp:
+with open('../../data/encode/PL_mn_approx.txt') as fp:
     for line in fp:
         hap_lists.append([int(x) for x in line.split()])
 

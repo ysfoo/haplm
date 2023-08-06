@@ -38,7 +38,7 @@ n_sample = 450000*5
 thin = 900*5
 
 hap_lists = []
-with open('../../data/encode/PL.txt') as fp:
+with open('../../data/encode/PL_mn_approx.txt') as fp:
     for line in fp:
         hap_lists.append([int(x) for x in line.split()])
 

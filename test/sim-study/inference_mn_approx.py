@@ -55,7 +55,7 @@ for pool_size in pool_sizes:
 		t = time()
 		for n, y in zip(ns, ys):			
 			lm = LatentMult(amat, y, n, '../../4ti2-files/sim-study-mn',
-				            solver, prefix_4ti2)
+				              solver, prefix_4ti2)
 			lm_list.append(lm)
 		pre_time = time() - t
 		# print(pre_time, flush=True)
@@ -63,7 +63,7 @@ for pool_size in pool_sizes:
 		print(f'MCMC for set {ds_idx}')
 		t = time()
 		idata = latent_mult_mcmc(lm_list, H, n_sample, n_burnin, ['mn_approx']*n_pools,
-			                     jaxify=True, chains=chains, random_seed=ds_idx^pool_size)
+			                       jaxify=True, chains=chains, random_seed=ds_idx^pool_size)
 		mcmc_time = time() - t
 
 		# ess = az.ess(idata, var_names=['p'])['p'].values

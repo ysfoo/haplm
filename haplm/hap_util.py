@@ -5,8 +5,8 @@ Utility functions related to haplotypes.
 import numpy as np
 import pulp
 from haplm.hippo_aeml import run_AEML
-
-solver = pulp.apis.SCIP_CMD(msg=False)
+from haplm.lm_dist import LatentMult
+from haplm.lm_inference import latent_mult_mcmc
 
 
 def mat_by_marker(G):
@@ -67,12 +67,11 @@ def num_to_str(hnum, strlen):
     return ''.join(['1' if (hnum >> i) & 1 else '0' for i in range(strlen)])
 
 
-def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, trials=5, 
+def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, trials=5, 
             inithaps_fn=lambda x: []):
     """
     Determine input haplotypes using partition ligation based, with AEML as the 
-    frequency estimate subroutine. Can only be used in the case that the 
-    observed counts are allele counts, due to the limitation of AEML. Includes 
+    frequency estimate subroutine. Includes 
     check to ensure that the feasible set is nonempty.
 
     Parameters
@@ -88,6 +87,8 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, trials=5,
         Filename for input haplotype list to AEML.
     aeml_dir : str
         Directory containing the C program for AEML.
+    solver : TODO
+        TODO
     trials : int > 0, default 5
         Number of trials for expectation maximization.
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
@@ -121,7 +122,7 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, trials=5,
         new_lists, convgs = zip(*[PL_aeml_pair(ns, ys, 
                                                blocks[2*x], blocks[2*x+1],
                                                hap_lists[2*x], hap_lists[2*x+1], 
-                                               hap_fn, aeml_dir, trials, 
+                                               hap_fn, aeml_dir, solver, trials, 
                                                inithaps_fn)
                                   for x in range(halfn)])
         new_lists = list(new_lists)
@@ -141,7 +142,7 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, trials=5,
     
     
 def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2, 
-                 hap_fn, aeml_dir, trials, inithaps_fn=lambda x: []):
+                 hap_fn, aeml_dir, thres, solver, trials, inithaps_fn=lambda x: []):
     """
     Perform estimation + ligation step for two adjacent segments using AEML as 
     the frequency estimation subroutine. Includes check to ensure that the 
@@ -171,6 +172,10 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
         Filename for input haplotype list to AEML.
     aeml_dir : str
         Directory containing the C program for AEML.
+    thres : float > 0
+        TODO
+    solver : TODO
+        TODO
     trials : int
         Number of trials for expectation maximization.
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
@@ -209,7 +214,6 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
     if aeml_1 is None or aeml_2 is None:
         return None, False
     
-    thres = 0.01
     remaining = sorted({p for p in list(aeml_1['pest']) + list(aeml_2['pest']) 
                        if p < thres})
     # check that the feasible set is not empty
@@ -247,6 +251,169 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
         return None, False
 
     return haps, aeml_1['convg'] and aeml_2['convg']
+
+
+def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains, thres,
+                 solver, prefix_4ti2, inithaps_fn=lambda x: []):
+    """
+    Determine input haplotypes using partition ligation based, with MCMC-Exact
+    as the frequency estimate subroutine. Includes check to ensure that the 
+    feasible set is nonempty.
+
+    Parameters
+    ----------
+    ns : list[int]
+        Number of haplotype samples for each pool.
+    ys : list[list[int]]
+        List consisting of a list per pool, where the inner list consists of the
+        allele counts of each marker.
+    TODO
+    inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
+        Function that takes in the number of markers over an segment, and
+        returns an iterable of haplotypes that are automatically included in the
+        list of input haplotypes to be determined.
+
+    Returns
+    -------
+    tuple (list[list[0,1]] or None, bool)
+        2-tuple consisting of (i) a list of input haplotypes, and (ii) boolean 
+        indicating whether all instances of AEML converged. The first entry may
+        be None if all instances of AEML over a segment failed, or if the 
+        feasible set is always empty for a segment.
+    """
+    if n_markers < 6:
+        print('only works for n_markers >= 6')
+        
+    n_3m = 4 - n_markers % 4 if n_markers % 4 else 0
+    n_4m = (n_markers - 3*n_3m) // 4
+    blocks = ([(4*x, 4*x+4) for x in range(n_4m)] + 
+              [(4*n_4m + 3*x, 4*n_4m + 3*x + 3) for x in range(n_3m)])
+    assert blocks[-1][-1] == n_markers
+    
+    hap_lists = [mat_by_marker(block[1]-block[0]).T for block in blocks]
+    
+    while len(blocks) > 1: 
+        halfn = len(blocks)//2
+        new_lists = [PL_mn_approx_pair(ns, ys, 
+                                       blocks[2*x], blocks[2*x+1],
+                                       hap_lists[2*x], hap_lists[2*x+1], 
+                                       n_sample, n_burnin, chains, thres,
+                                       solver, prefix_4ti2, inithaps_fn)
+                     for x in range(halfn)]
+        if any(haps is None for haps in new_lists):
+            return None
+        hap_lists = new_lists + ([hap_lists[-1]] if len(blocks) % 2 else [])
+        blocks = [(blocks[2*x][0], blocks[2*x+1][1])
+                  for x in range(halfn)] + ([blocks[-1]] 
+                                            if len(blocks) % 2 
+                                            else [])
+        assert len(blocks) == len(hap_lists)        
+        
+    assert blocks[0][0] == 0 and blocks[0][-1] == n_markers
+    return hap_lists[0]
+    
+    
+def PL_mn_approx_pair(ns, ys, block1, block2, hap_list1, hap_list2, 
+                      n_sample, n_burnin, chains, thres, solver, prefix_4ti2, 
+                      inithaps_fn=lambda x: []):
+    """
+    Perform estimation + ligation step for two adjacent segments using LC-Sampling 
+    as the frequency estimation subroutine. Includes check to ensure that the 
+    feasible set is nonempty.
+
+    Parameters
+    ----------
+    ns : list[int]
+        Number of haplotype samples for each pool.
+    ys : list[list[int]]
+        List consisting of a list per pool, where the inner list consists of the
+        allele counts of each marker (over all markers, not just the markers 
+        covered by two segments).
+    block1 : tuple
+        Tuple of two integers (start, end), where `start` is the 0-based index 
+        of the leftmost marker of the first segment, and `end` is the 1 larger 
+        than the 0-based index of the rightmost marker of the first segment. 
+    block2 : tuple
+        Tuple of two integers (start, end), where `start` is the 0-based index 
+        of the leftmost marker of the second segment, and `end` is the 1 larger 
+        than the 0-based index of the rightmost marker of the second segment. 
+    hap_list1 : list[list[0,1]]
+        List of input haplotypes over the first segment.
+    hap_list2 : list[list[0,1]]
+        List of input haplotypes over the second segment.
+    TODO
+    inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
+        Function that takes in the number of markers over an segment, and
+        returns an iterable of haplotypes that are automatically included in the
+        list of input haplotypes to be determined.
+
+    Returns
+    -------
+    tuple (list[list[0,1]] or None, bool)
+        2-tuple consisting of (i) a list of input haplotypes, and (ii) boolean 
+        indicating whether all instances of AEML converged. The first entry may 
+        be None if all instances of AEML over a segment failed, or if the 
+        feasible set is always empty for a segment.
+    """
+    assert block2[0] == block1[1]
+    
+    print(f'LC-Sampling for markers {block1[0]+1}-{block1[1]}: ', end='')    
+    lm_list = []
+    for n, y in zip(ns, ys):        
+        lm = LatentMult(hap_list1.T, y[block1[0]:block1[1]], n, '../../4ti2-files/pl-mn',
+                        solver, prefix_4ti2)
+        lm_list.append(lm)
+    idata_1 = latent_mult_mcmc(lm_list, len(hap_list1), n_sample, n_burnin, ['mn_approx']*len(ys),
+                               jaxify=True, chains=chains)
+    
+    print(f'LC-Sampling for markers {block2[0]+1}-{block2[1]}: ', end='')
+    lm_list = []
+    amat = mat_by_marker(block2[1]-block2[0])
+    for n, y in zip(ns, ys):            
+        lm = LatentMult(hap_list2.T, y[block2[0]:block2[1]], n, '../../4ti2-files/pl-mn',
+                        solver, prefix_4ti2)
+        lm_list.append(lm)
+    idata_2 = latent_mult_mcmc(lm_list, len(hap_list2), n_sample, n_burnin, ['mn_approx']*len(ys),
+                               jaxify=True, chains=chains)
+    
+    pmean_1 = idata_1.posterior.p.values.mean(axis=(0,1))
+    pmean_2 = idata_2.posterior.p.values.mean(axis=(0,1))
+    remaining = sorted({p for p in list(pmean_1) + list(pmean_2)
+                       if p < thres})
+    # check that the feasible set is not empty
+    while remaining:
+        haps = concat_haps(pmean_1, pmean_2, hap_list1, hap_list2,
+                           thres=thres, inithaps_fn=inithaps_fn)
+        for n, y in zip(ns, ys):
+            amat = np.vstack([np.ones(len(haps), int), 
+                             np.array(haps).T]).astype(int)
+            y = np.array([n] + list(y[block1[0]:block2[1]]))
+            nzs = np.arange(len(haps))
+            # check if y = Az has a solution
+            prob = pulp.LpProblem("test", pulp.LpMinimize)
+            z = pulp.LpVariable.dicts("z", nzs, lowBound=0, cat='Integer')
+            for j in range(amat.shape[0]):
+                prob += (pulp.lpSum([amat[j,k]*z[k] for k in nzs]) == y[j])
+            prob.solve(solver)  
+            if prob.status != 1:
+                # no solution
+                assert prob.status == -1
+                break
+        else:
+            # done, break out of while loop
+            break
+        thres = remaining.pop()
+        print(f'decrease threshold to {thres}')
+    else:
+        # failed
+        print(f'failed to combine {len(hap_list1)} haplotypes '
+              f'from {block1[0]+1}-{block1[1]} and {len(hap_list2)} haplotypes '
+              f'from {block2[0]+1}-{block2[1]}')
+        print(y)
+        for row in amat:
+            print(' '.join([str(x) for x in row]))
+        return None
+    return haps
 
 
 def select_haps(pest, thres):    

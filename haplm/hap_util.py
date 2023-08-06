@@ -67,8 +67,8 @@ def num_to_str(hnum, strlen):
     return ''.join(['1' if (hnum >> i) & 1 else '0' for i in range(strlen)])
 
 
-def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, trials=5, 
-            inithaps_fn=lambda x: []):
+def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, thres, maxhaps=None, 
+            trials=5, inithaps_fn=lambda x: []):
     """
     Determine input haplotypes using partition ligation based, with AEML as the 
     frequency estimate subroutine. Includes 
@@ -87,10 +87,9 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, trials=5,
         Filename for input haplotype list to AEML.
     aeml_dir : str
         Directory containing the C program for AEML.
-    solver : TODO
-        TODO
     trials : int > 0, default 5
         Number of trials for expectation maximization.
+    TODO
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
         Function that takes in the number of markers over an segment, and
         returns an iterable of haplotypes that are automatically included in the
@@ -122,8 +121,8 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, trials=5,
         new_lists, convgs = zip(*[PL_aeml_pair(ns, ys, 
                                                blocks[2*x], blocks[2*x+1],
                                                hap_lists[2*x], hap_lists[2*x+1], 
-                                               hap_fn, aeml_dir, solver, trials, 
-                                               inithaps_fn)
+                                               hap_fn, aeml_dir, solver, thres,
+                                               maxhaps, trials, inithaps_fn)
                                   for x in range(halfn)])
         new_lists = list(new_lists)
         if not all(convgs):
@@ -142,7 +141,8 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, trials=5,
     
     
 def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2, 
-                 hap_fn, aeml_dir, thres, solver, trials, inithaps_fn=lambda x: []):
+                 hap_fn, aeml_dir, solver, thres, maxhaps, trials, 
+                 inithaps_fn=lambda x: []):
     """
     Perform estimation + ligation step for two adjacent segments using AEML as 
     the frequency estimation subroutine. Includes check to ensure that the 
@@ -219,7 +219,7 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
     # check that the feasible set is not empty
     while remaining:
         haps = concat_haps(aeml_1['pest'], aeml_2['pest'], hap_list1, hap_list2,
-                           thres=thres, inithaps_fn=inithaps_fn)
+                           thres=thres, maxhaps=maxhaps, inithaps_fn=inithaps_fn)
         for n, y in zip(ns, ys):
             amat = np.vstack([np.ones(len(haps), int), 
                              np.array(haps).T]).astype(int)
@@ -253,8 +253,8 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
     return haps, aeml_1['convg'] and aeml_2['convg']
 
 
-def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains, thres,
-                 solver, prefix_4ti2, inithaps_fn=lambda x: []):
+def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains,
+                 solver, prefix_4ti2, thres, maxhaps=None, inithaps_fn=lambda x: []):
     """
     Determine input haplotypes using partition ligation based, with MCMC-Exact
     as the frequency estimate subroutine. Includes check to ensure that the 
@@ -297,8 +297,9 @@ def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains, thres,
         new_lists = [PL_mn_approx_pair(ns, ys, 
                                        blocks[2*x], blocks[2*x+1],
                                        hap_lists[2*x], hap_lists[2*x+1], 
-                                       n_sample, n_burnin, chains, thres,
-                                       solver, prefix_4ti2, inithaps_fn)
+                                       n_sample, n_burnin, chains,
+                                       solver, prefix_4ti2, 
+                                       thres, maxhaps, inithaps_fn)
                      for x in range(halfn)]
         if any(haps is None for haps in new_lists):
             return None
@@ -314,8 +315,8 @@ def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains, thres,
     
     
 def PL_mn_approx_pair(ns, ys, block1, block2, hap_list1, hap_list2, 
-                      n_sample, n_burnin, chains, thres, solver, prefix_4ti2, 
-                      inithaps_fn=lambda x: []):
+                      n_sample, n_burnin, chains, solver, prefix_4ti2, 
+                      thres, maxhaps, inithaps_fn=lambda x: []):
     """
     Perform estimation + ligation step for two adjacent segments using LC-Sampling 
     as the frequency estimation subroutine. Includes check to ensure that the 
@@ -383,7 +384,7 @@ def PL_mn_approx_pair(ns, ys, block1, block2, hap_list1, hap_list2,
     # check that the feasible set is not empty
     while remaining:
         haps = concat_haps(pmean_1, pmean_2, hap_list1, hap_list2,
-                           thres=thres, inithaps_fn=inithaps_fn)
+                           thres=thres, maxhaps=maxhaps, inithaps_fn=inithaps_fn)
         for n, y in zip(ns, ys):
             amat = np.vstack([np.ones(len(haps), int), 
                              np.array(haps).T]).astype(int)
@@ -479,9 +480,10 @@ def concat_haps(pest1, pest2, haps1, haps2, thres, maxhaps=None,
     select1 = select_haps(pest1, thres)
     select2 = select_haps(pest2, thres)
 
-    pair_dict = {(idx1, idx2): min(pest1[idx1], pest2[idx2])
+    pair_dict = {(idx1, idx2): (pest1[idx1], pest2[idx2])
                  for idx1 in select1 for idx2 in select2}
-    hap_pairs = sorted(pair_dict, key=lambda x: -pair_dict[x])
+    hap_pairs = sorted(pair_dict, key=lambda x: (-min(pair_dict[x]),
+                                                 -max(pair_dict[x])))
 
     inithaps_set = {tuple(hap) for hap in inithaps}
     hap_list = [list(hap) for hap in inithaps_set]

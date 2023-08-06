@@ -44,8 +44,9 @@ with open('../../data/encode/PL_aeml.txt', 'w') as fp:
 
         print(f'PL for dataset {ds_idx}')
         haps, convg = PL_aeml(ns, ys, n_markers, 
-                              hap_fn='encode_haplist.txt', aeml_dir=aeml_dir, thres=0.01,
-                              solver=solver, trials=trials, inithaps_fn=inithaps_fn)
+                              hap_fn='encode_haplist.txt', aeml_dir=aeml_dir, 
+                              solver=solver, thres=0.005, maxhaps=40, 
+                              trials=trials, inithaps_fn=inithaps_fn)
         if haps is None:
             failed.append(ds_idx)
             fp.write('\n')

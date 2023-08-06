@@ -41,8 +41,8 @@ trials = 5 # number of random initialisations for AEML
 
 # wildtype and haplotypes with only minor allele at one marker only are included by default
 def inithaps_fn(n_markers):
-    return []
-    #return np.vstack([np.zeros((1, n_markers), dtype=int), np.eye(n_markers, dtype=int)])
+    # return []
+    return np.vstack([np.zeros((1, n_markers), dtype=int), np.eye(n_markers, dtype=int)])
 
 failed = [] # 1-based indices of datasets for which PL-AEML failed
 with open('../../data/encode/PL_mn_approx.txt', 'w') as fp:

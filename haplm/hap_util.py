@@ -1,5 +1,6 @@
 """
-Utility functions related to haplotypes.
+Utility functions related to haplotypes, including partition ligation using
+either AEML or MCMC-Approx as a frequency estimation subroutine.
 """
 
 import numpy as np
@@ -81,15 +82,23 @@ def PL_aeml(ns, ys, n_markers, hap_fn, aeml_dir, solver, thres, maxhaps=None,
     ys : list[list[int]]
         List consisting of a list per pool, where the inner list consists of the
         allele counts of each marker.
-    n_markers : int
+    n_markers : int > 0
         Number of markers.
     hap_fn : str
         Filename for input haplotype list to AEML.
     aeml_dir : str
         Directory containing the C program for AEML.
+    solver : pulp.core.LpSolver_CMD, optional
+        Mixed-integer programming solver that is passed to pulp.LpProblem.solve.
+        See https://coin-or.github.io/pulp/technical/solvers.html for a list of 
+        possible solvers.
+    thres : float > 0
+        Frequency threshold of haplotypes to be selected.
+    maxhaps : int, optional
+        Maximum number of concatenated haplotypes. If None, no maximum is
+        imposed.
     trials : int > 0, default 5
         Number of trials for expectation maximization.
-    TODO
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
         Function that takes in the number of markers over an segment, and
         returns an iterable of haplotypes that are automatically included in the
@@ -172,11 +181,16 @@ def PL_aeml_pair(ns, ys, block1, block2, hap_list1, hap_list2,
         Filename for input haplotype list to AEML.
     aeml_dir : str
         Directory containing the C program for AEML.
+    solver : pulp.core.LpSolver_CMD, optional
+        Mixed-integer programming solver that is passed to pulp.LpProblem.solve.
+        See https://coin-or.github.io/pulp/technical/solvers.html for a list of 
+        possible solvers.
     thres : float > 0
-        TODO
-    solver : TODO
-        TODO
-    trials : int
+        Frequency threshold of haplotypes to be selected.
+    maxhaps : int, optional
+        Maximum number of concatenated haplotypes. If None, no maximum is
+        imposed.
+    trials : int > 0, default 5
         Number of trials for expectation maximization.
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
         Function that takes in the number of markers over an segment, and
@@ -267,7 +281,26 @@ def PL_mn_approx(ns, ys, n_markers, n_sample, n_burnin, chains,
     ys : list[list[int]]
         List consisting of a list per pool, where the inner list consists of the
         allele counts of each marker.
-    TODO
+    n_markers : int > 0
+        Number of markers.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    chains : int > 0
+        The number of MCMC chains to run.
+    solver : pulp.core.LpSolver_CMD, optional
+        Mixed-integer programming solver that is passed to pulp.LpProblem.solve.
+        See https://coin-or.github.io/pulp/technical/solvers.html for a list of 
+        possible solvers.
+    prefix_4ti2 : str, default to calling `find_4ti2_prefix()`
+        Prefix to 4ti2's commands depending on installation method, e.g. "" or 
+        "4ti2-".
+    thres : float > 0
+        Frequency threshold of haplotypes to be selected.
+    maxhaps : int, optional
+        Maximum number of concatenated haplotypes. If None, no maximum is
+        imposed.
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
         Function that takes in the number of markers over an segment, and
         returns an iterable of haplotypes that are automatically included in the
@@ -342,7 +375,26 @@ def PL_mn_approx_pair(ns, ys, block1, block2, hap_list1, hap_list2,
         List of input haplotypes over the first segment.
     hap_list2 : list[list[0,1]]
         List of input haplotypes over the second segment.
-    TODO
+    n_markers : int > 0
+        Number of markers.
+    n_sample : int > 0
+        Number of inference iterations.
+    n_burnin : int > 0
+        Number of burn-in iterations.
+    chains : int > 0
+        The number of MCMC chains to run.
+    solver : pulp.core.LpSolver_CMD, optional
+        Mixed-integer programming solver that is passed to pulp.LpProblem.solve.
+        See https://coin-or.github.io/pulp/technical/solvers.html for a list of 
+        possible solvers.
+    prefix_4ti2 : str, default to calling `find_4ti2_prefix()`
+        Prefix to 4ti2's commands depending on installation method, e.g. "" or 
+        "4ti2-".
+    thres : float > 0
+        Frequency threshold of haplotypes to be selected.
+    maxhaps : int, optional
+        Maximum number of concatenated haplotypes. If None, no maximum is
+        imposed.
     inithaps_fn : Callable[[int], iterable[iterable]], default : lambda x: []
         Function that takes in the number of markers over an segment, and
         returns an iterable of haplotypes that are automatically included in the
@@ -426,7 +478,7 @@ def select_haps(pest, thres):
     ----------
     pest : list[float]
         List of haplotype frequency estimates.
-    thres : float
+    thres : float > 0
         Frequency threshold of haplotypes to be selected.
 
     Returns
@@ -462,7 +514,7 @@ def concat_haps(pest1, pest2, haps1, haps2, thres, maxhaps=None,
         List of input haplotypes over the first segment.
     haps2 : list[list[0,1]]
         List of input haplotypes over the second segment.
-    thres : float
+    thres : float > 0
         Frequency threshold of haplotypes to be selected.
     maxhaps : int, optional
         Maximum number of concatenated haplotypes. If None, no maximum is

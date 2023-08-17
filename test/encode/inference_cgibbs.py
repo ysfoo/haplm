@@ -3,7 +3,7 @@ Perform LC-Sampling on datasets based on the 1000 Genomes Project.
 
 Input files required:
 - Output of partition ligation
-  @ '../../data/encode/PL.txt'
+  @ '../../data/encode/PL_mn_approx.txt'
 - Pool size with observed allele counts for each pool
   @ '../../data/encode/psize{pool_size}_m{n_markers}_id{ds_idx}.data'
 

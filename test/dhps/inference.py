@@ -4,8 +4,7 @@ import numpy as np
 import scipy
 import pickle as pkl
 import collections
-import pycountry_convert # pip install pycountry_convert
-import re
+import pycountry_convert
 from PIL import Image
 from time import time
 from tqdm import tqdm
@@ -13,7 +12,6 @@ from tqdm import tqdm
 import pymc as pm
 import jax
 import jax.numpy as jnp
-import pytensor
 import pytensor.tensor as pt
 from pytensor.graph import Apply, Op
 from pytensor.link.jax.dispatch import jax_funcify
@@ -21,7 +19,7 @@ from haplm.gp_util import GP, SphereGneiting
 import numpyro
 
 # used for integer programming, checking y = Az has solution for z
-import pulp # need to install pulp, e.g. conda install -c conda-forge pulp
+import pulp
 from haplm.lm_dist import LatentMult, find_4ti2_prefix
 from haplm.numpyro_util import sample_numpyro_nuts
 
@@ -38,8 +36,7 @@ filename = "dhfr_dhps_surveyor_data.xls"
 urllib.request.urlretrieve("http://www.wwarn.org/dhfr-dhps-surveyor/dhfrdhpsSurveyor/database/dhfr_dhps_surveyor_data.xls",
                            filename)
 
-filename = "dhfr_dhps_surveyor_data.xls"
-dhfr_dhps = pd.read_excel(filename) # need to isntall xlrd, e.g. conda install -c conda-forge xlrd
+dhfr_dhps = pd.read_excel(filename)
 dhfr_dhps.drop(columns=['Mixed present', 'authors', 'publication year', 'publication Url', 'title',
                         'notes', 'pubMedId', 'percentage', 'included or excluded', 'marker group'],
                inplace=True)
@@ -127,6 +124,7 @@ for m in set(dhps['mutation']):
     print(m)
     mut_dict[m] = tuple(code)
 
+
 # convert ternary array to binary array (rows of A)
 def t2b(tarr):
     G = len(tarr)
@@ -139,6 +137,10 @@ def t2b(tarr):
             barr[i] = 1
     return barr
 
+
+# return list of list of full haplotypes for each collapsed haplotype,
+# given boolean tuple of whether there is info about each marker
+# collapsed haplotypes omit markers for which there is no info
 def cols_given_info(has_info):
     G = len(has_info)
     H = 1 << G
@@ -146,10 +148,13 @@ def cols_given_info(has_info):
     H_sub = 1 << G_sub
     cols = [[] for _ in range(H_sub)]
     
+    # marker indices that have info
     test_gs = [g for g in range(G) if has_info[g]]
+    # for each full haplotype, find the corresponding collapsed haplotype
     for h in range(H):
         cols[(sum(((h >> g) & 1) << g_sub for g_sub, g in enumerate(test_gs)))].append(h)
     return cols
+
 
 fail = 0
 ys = []
@@ -165,8 +170,10 @@ for iden, pool in pools:
     assert len(pool['mutation'].unique()) == len(pool) # ensure no doule entries
     
     n = pool['tested'].max() # number of haplotypes in pool
+    # boolean tuple for whether this pool has information about each marker
     has_info = tuple(any(mut_dict[mutation][i] != -1 for mutation in pool['mutation']) for i in range(n_mut))    
     
+    # configuration matrices are constructed based on collapsed haplotypes
     code_to_prop = {}
     for tested, present, mutation in zip(pool['tested'],pool['present'],pool['mutation']):
         code = tuple(m for m, b in zip(mut_dict[mutation], has_info) if b)
@@ -234,6 +241,9 @@ with open('../../test/dhps/data.pkl', 'rb') as fp:
     X = data['X']
     lm_list = data['lm_list']
 
+# dict that maps boolean tuple of whether pool has info about each marker
+# to list of pool indices
+# if pool has info on all markers, the index is separately stored in idxs_all_haps
 idxs_by_info = collections.defaultdict(list)
 idxs_all_haps = []
 for idx, info in enumerate(infos):
@@ -258,8 +268,14 @@ for info in set(infos):
 
 logfacts = scipy.special.gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2))
 
+
+# same approach as haplm.lm_inference.hier_latent_mult_mcmc with jaxify=True and methods=['exact']*N
 def loglike_fn(p):
-    return (sum(lm_list[i].loglike_exact_jax(p[i], logfacts) for i in idxs_allhaps) +
+    
+    return (
+            # deal with pools where there is info about all markers
+            sum(lm_list[i].loglike_exact_jax(p[i], logfacts) for i in idxs_allhaps) +
+            # deal with other pools, as multinomial probabilities should be summed for each collapsed haplotype
             sum(lm_list[i].loglike_exact_jax(jnp.dot(pmat_dict[info], p[i]), logfacts)
                 for i, info in zip(idxs_excl_allhaps, infos_excl_allhaps)))
 
@@ -280,6 +296,7 @@ loglike_op = LoglikeOp()
 def loglike_dispatch(op, **kwargs):
     return loglike_fn
 
+
 with pm.Model() as model:
     sigma = pm.InverseGamma('sigma', alpha=3, beta=1)
     alpha = pm.InverseGamma('alpha', alpha=3, beta=3, shape=H)
@@ -297,6 +314,7 @@ with pm.Model() as model:
                                                axis=-1))
     loglike = pm.Potential('loglike', loglike_op(ps))
 
+# run MCMC
 t = time()
 with model:
     idata = sample_numpyro_nuts(draws=draws, tune=tune, chains=chains, target_accept=0.9,
@@ -307,9 +325,6 @@ mcmc_time = time() - t
 idata.sample_stats.attrs['preprocess_time'] = pre_time
 idata.sample_stats.attrs['mcmc_walltime'] = mcmc_time
 
+# save trace
 idata.posterior = idata.posterior.drop_vars('noise')
 idata.to_netcdf(f'../../data/dhps/exact.netcdf')
-
-
-
-

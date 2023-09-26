@@ -64,10 +64,10 @@ Sampling with NUTS may sometimes take a long time (>5 minutes) to compile, which
 ## References
 
 <a id="1">[1]</a> 
-Foo, Y. S., Flegg, J. A. (2023). Haplotype inference from pooled genetic data with a latent multinomial model. To appear.
+Foo, Y. S., Flegg, J. A. (2023). Haplotype inference from pooled genetic data with a latent multinomial model. arXiv preprint arXiv:2308.16465. [https://doi.org/10.48550/arXiv.2308.16465](https://doi.org/10.48550/arXiv.2308.16465)
 
 <a id="2">[2]</a> 
-Pirinen, M. (2009). Estimating population haplotype frequencies from pooled SNP data using incomplete database information. Bioinformatics, 25(24), 3296–3302. https://doi.org/10.1093/bioinformatics/btp584
+Pirinen, M. (2009). Estimating population haplotype frequencies from pooled SNP data using incomplete database information. Bioinformatics, 25(24), 3296–3302. [https://doi.org/10.1093/bioinformatics/btp584](https://doi.org/10.1093/bioinformatics/btp584)
 
 <a id="3">[3]</a> 
-Kuk, A. Y. C., Zhang, H., & Yang, Y. (2009). Computationally feasible estimation of haplotype frequencies from pooled DNA with and without Hardy-Weinberg equilibrium. Bioinformatics, 25(3), 379–386. https://doi.org/10.1093/bioinformatics/btn623
+Kuk, A. Y. C., Zhang, H., & Yang, Y. (2009). Computationally feasible estimation of haplotype frequencies from pooled DNA with and without Hardy-Weinberg equilibrium. Bioinformatics, 25(3), 379–386. [https://doi.org/10.1093/bioinformatics/btn623](https://doi.org/10.1093/bioinformatics/btn623)

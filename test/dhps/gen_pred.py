@@ -1,9 +1,7 @@
 import numpy as np
 import pymc as pm
 import arviz as az
-import scipy
 import pickle as pkl
-import collections
 import sys
 
 import pytensor.tensor as pt
@@ -12,7 +10,9 @@ from haplm.gp_util import GP, SphereGneiting
 
 from PIL import Image
 
+# get year from command line argument
 yr = int(sys.argv[1])
+# get posterior predictive distribution on pixels where there are covariates
 im = Image.open(f'../../data/dhps/Africa_pfpr_{yr}.tif') 
 pfpr = np.asarray(im)
 pfpr_masked = np.ma.masked_less(pfpr, 0)
@@ -28,6 +28,7 @@ step = np.array([im.tag[33550][0], -im.tag[33550][1]]) * RAD_TO_DEG
 yidxs, xidxs = np.where(np.logical_not(mask))
 points = topleft + np.array([xidxs, yidxs]).T*step
 
+# all covariates for posterior predictive
 Xnew = np.c_[points, yr*np.ones(N_pred), pfpr_masked.compressed()]
 
 with open('../../test/dhps/data.pkl', 'rb') as fp:
@@ -64,17 +65,21 @@ with model:
     pred_idata = pm.sample_posterior_predictive(idata, var_names=['p_pred'])
 
 pred_samples = np.vstack(pred_idata.posterior_predictive.p_pred)
-np.save(f'../../data/dhps/exact_{yr}_pred_samples.npy', pred_samples)
+np.save(f'../../data/dhps/exact_{yr}_pred_samples.npy', pred_samples) # large RAM needed
 
-pred_samples = np.load(f'../../data/dhps/exact_{yr}_pred_samples.npy')
+# if script crashes after .npy is created, 
+# rerun with above (from pm.Model() onwards) commented out and uncomment the line below
+# pred_samples = np.load(f'../../data/dhps/exact_{yr}_pred_samples.npy')
 
+# summary statistics of haplotype frequencies
 sumstats = {}
 sumstats['mean'] = pred_samples.mean(axis=0)
 sumstats['sd'] = pred_samples.std(axis=0)
 sumstats['median'] = np.median(pred_samples, axis=0)
-sumstats['mad'] = np.median(np.abs(pred_samples - sumstats['median'][None,:,:]), axis=0)
+# sumstats['mad'] = np.median(np.abs(pred_samples - sumstats['median'][None,:,:]), axis=0) # memory intensive
 sumstats['quantiles'] = np.quantile(pred_samples, np.arange(0, 1.01, 0.05), axis=0)
 
+# summary statistics of allele frequencies
 amat = mat_by_marker(3)
 geno_pred_samples = np.dot(pred_samples, amat.T)
 
@@ -82,7 +87,7 @@ sumstats = {}
 sumstats['geno_mean'] = geno_pred_samples.mean(axis=0)
 sumstats['geno_sd'] = geno_pred_samples.std(axis=0)
 sumstats['geno_median'] = np.median(geno_pred_samples, axis=0)
-sumstats['geno_mad'] = np.median(np.abs(geno_pred_samples - sumstats['geno_median'][None,:,:]), axis=0)
+# sumstats['geno_mad'] = np.median(np.abs(geno_pred_samples - sumstats['geno_median'][None,:,:]), axis=0) # memory intensive
 sumstats['geno_quantiles'] = np.quantile(geno_pred_samples, np.arange(0, 1.01, 0.05), axis=0)
 
 with open(f'../../data/dhps/exact_{yr}_sumstats.pkl', 'wb') as fp:

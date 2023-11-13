@@ -325,7 +325,7 @@ with pm.Model() as model:
 # run MCMC
 t = time()
 with model:
-    idata = pm.jax_sampling.sample_numpyro_nuts(draws=draws, tune=tune, chains=chains, target_accept=0.9,
+    idata = pm.sampling_jax.sample_numpyro_nuts(draws=draws, tune=tune, chains=chains, target_accept=0.9,
                                                 random_seed=2023, postprocessing_chunks=25)
 mcmc_time = time() - t
 

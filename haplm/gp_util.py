@@ -15,12 +15,8 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 
-from pymc.gp.util import (
-    JITTER_DEFAULT,
-    cholesky,
-    solve_lower,
-    stabilize,
-)
+from pymc.gp.util import JITTER_DEFAULT, stabilize
+from pymc.gp.gp import cholesky, solve_lower
 
 DEG_TO_RAD = np.pi/180
 RAD_TO_DEG = 180/np.pi

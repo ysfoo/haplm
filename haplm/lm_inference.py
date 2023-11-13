@@ -26,7 +26,6 @@ from arviz.data.base import make_attrs
 from pymc.backends.arviz import find_constants, find_observations
 
 import pytensor
-from pytensor.tensor.random.op import RandomVariable, default_supp_shape_from_params
 import pytensor.tensor as pt
 from pytensor.graph import Apply, Op
 from pytensor.link.jax.dispatch import jax_funcify

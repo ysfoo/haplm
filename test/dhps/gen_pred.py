@@ -29,9 +29,9 @@ yidxs, xidxs = np.where(np.logical_not(mask))
 points = topleft + np.array([xidxs, yidxs]).T*step
 
 # all covariates for posterior predictive
-Xnew = np.c_[points, yr*np.ones(N_pred), pfpr_masked.compressed()]
+Xnew = np.c_[points, (yr+0.5)*np.ones(N_pred), pfpr_masked.compressed()]
 
-with open('../../test/dhps/data.pkl', 'rb') as fp:
+with open('processed.pkl', 'rb') as fp:
     data = pkl.load(fp)
     ys = data['ys']
     ns = data['ns']
@@ -58,7 +58,8 @@ with pm.Model() as model:
 
 with model:
     fs_pred = [gps[h].marg_cond(f'f_pred{h}', Xnew=Xnew[:,:3]) for h in range(H)]
-    ps_pred = pm.Deterministic(f'p_pred', pm.math.softmax(pt.stack(fs_pred, axis=1)
+    ps_pred = pm.Deterministic(f'p_pred', 
+                               pm.math.softmax(pt.stack(fs_pred, axis=1)
                                                *alpha + mean + pt.outer(pt.as_tensor_variable(Xnew[:,3]), beta)
                                                + sigma*pm.Normal('noise_pred', shape=(N_pred,H)),
                                                axis=-1))

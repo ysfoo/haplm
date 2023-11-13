@@ -1,4 +1,8 @@
-import urllib.request
+'''
+Runs MCMC inference for latent multinomial model applied to the full WWARN molecular marker dataset.
+'''
+
+
 import pandas as pd
 import numpy as np
 import scipy
@@ -10,7 +14,7 @@ from time import time
 from tqdm import tqdm
 
 import pymc as pm
-import jax
+import pymc.sampling_jax
 import jax.numpy as jnp
 import pytensor.tensor as pt
 from pytensor.graph import Apply, Op
@@ -21,7 +25,16 @@ import numpyro
 # used for integer programming, checking y = Az has solution for z
 import pulp
 from haplm.lm_dist import LatentMult, find_4ti2_prefix
-from haplm.numpyro_util import sample_numpyro_nuts
+# from haplm.numpyro_util import sample_numpyro_nuts
+
+
+MARKER_DATA_FNAME = "dhfr_dhps_surveyor_data.xls"
+get_pfpr_fname = lambda yr: f'../../data/dhps/Africa_pfpr_{yr}.tif'
+
+# uncomment this to download latest version of WWARN data
+# import urllib.request
+# urllib.request.urlretrieve("http://www.wwarn.org/dhfr-dhps-surveyor/dhfrdhpsSurveyor/database/dhfr_dhps_surveyor_data.xls",
+#                            MARKER_DATA_FNAME)
 
 draws = 500
 tune = 500
@@ -31,12 +44,8 @@ numpyro.set_host_device_count(chains)
 prefix_4ti2 = find_4ti2_prefix()
 solver = pulp.apis.COIN_CMD(msg=False) # change to more efficient solver if available
 
-# download data
-filename = "dhfr_dhps_surveyor_data.xls"
-urllib.request.urlretrieve("http://www.wwarn.org/dhfr-dhps-surveyor/dhfrdhpsSurveyor/database/dhfr_dhps_surveyor_data.xls",
-                           filename)
-
-dhfr_dhps = pd.read_excel(filename)
+# read marker data
+dhfr_dhps = pd.read_excel(MARKER_DATA_FNAME)
 dhfr_dhps.drop(columns=['Mixed present', 'authors', 'publication year', 'publication Url', 'title',
                         'notes', 'pubMedId', 'percentage', 'included or excluded', 'marker group'],
                inplace=True)
@@ -72,7 +81,7 @@ print('Number of pools after filtering:', len(pools))
 
 pfpr_dict = {}
 for yr in range(2000, 2021):
-    im = Image.open(f'../../data/dhps/Africa_pfpr_{yr}.tif')
+    im = Image.open(get_pfpr_fname(yr))
     pfpr = np.asarray(im)
     pfpr_masked = np.ma.masked_less(pfpr, 0)
     pfpr_dict[yr] =  pfpr_masked
@@ -138,6 +147,106 @@ def t2b(tarr):
     return barr
 
 
+
+
+fail = 0
+ys = []
+ns = []
+codes = []
+amats = []
+infos = []
+X = []
+
+for iden, pool in pools:
+    pool = pool[pool['mutation'].isin(mut_dict)]
+    for cname in pool.columns[:-3]:
+        assert len(pool[cname].unique()) == 1 # ensure all non-mutation entries are the same
+    assert len(pool['mutation'].unique()) == len(pool) # ensure no double entries
+    
+    n = pool['tested'].max() # number of haplotypes in pool
+    # boolean tuple for whether this pool has information about each marker
+    has_info = tuple(any(mut_dict[mutation][i] != -1 for mutation in pool['mutation']) for i in range(n_mut))    
+    
+    # configuration matrices are constructed based on collapsed haplotypes
+    code_to_prop = {}
+    for tested, present, mutation in zip(pool['tested'],pool['present'],pool['mutation']):
+        code = tuple(m for m, b in zip(mut_dict[mutation], has_info) if b)
+        code_to_prop[code] = code_to_prop.get(code, 0) + present/tested # sum to include mixed infections
+    y = []
+    amat = []
+    codevec = []
+    for code, prop in code_to_prop.items():
+        y.append(int(round(prop*n)))
+        amat.append(t2b(code))
+        codevec.append(code)
+    y = np.array(y)
+    amat = np.array(amat)
+    
+    # checks if at least one solution to y = Az exists
+    H = 1 << sum(has_info)
+    prob = pulp.LpProblem("test", pulp.LpMinimize)
+    z = pulp.LpVariable.dicts("z", range(H), lowBound=0, cat='Integer')
+    prob += pulp.lpSum(z) == n
+    for j in range(len(y)):
+        prob += (pulp.lpSum([amat[j,k]*z[k] for k in range(H)]) == y[j])
+    prob.solve(solver)  
+    if prob.status == 1:
+        ys.append(y)
+        ns.append(n)
+        codes.append(codevec)
+        amats.append(amat)
+        infos.append(has_info)
+        row = pool.iloc[0,:]
+        lon, lat, start, end = row[['lon','lat','study start year','study end year']]
+        pos = closest_dict[(lon, lat)]
+        pfpr_val = np.mean([pfpr_dict[yr][yidxs[pos],xidxs[pos]]
+                            for yr in range(int(start), int(end)+1)])
+        X.append([lon, lat, (start+end)/2, pfpr_val])
+    else:
+        fail += 1
+N = len(ys)
+print(fail, 'pools have inconsistent counts')
+print(f'Use {N} pools for inference')
+
+
+X = np.array(X)
+lm_list = []
+N = len(ys)
+for i in tqdm(range(N)):
+    lm = LatentMult(amats[i], ys[i], ns[i], '../../4ti2-files/dhps-exact',
+                    solver, prefix_4ti2, enum_sols=True)
+    lm_list.append(lm)
+    nsol = ('failed' if lm.sols_var is None else len(lm.sols)) if lm.idx_var.size else 1
+
+pre_time = time() - t
+
+with open('processed.pkl', 'wb') as fp:
+    pkl.dump({
+              'ys': ys,
+              'ns': ns,
+              'amats': amats,
+              'codes': codes,
+              'infos': infos,
+              'X': X,
+              'lm_list': lm_list,
+             }, fp)
+
+
+# dict that maps boolean tuple of whether pool has info about each marker
+# to list of pool indices
+# if pool has info on all markers, the index is separately stored in idxs_all_haps
+idxs_by_info = collections.defaultdict(list)
+idxs_all_haps = []
+for idx, info in enumerate(infos):
+    if info == (True, True, True):
+        idxs_all_haps.append(idx)
+    else:
+        idxs_by_info[info].append(idx)
+N = len(ys)
+H = 8
+G = 3
+
+
 # return list of list of full haplotypes for each collapsed haplotype,
 # given boolean tuple of whether there is info about each marker
 # collapsed haplotypes omit markers for which there is no info
@@ -155,113 +264,13 @@ def cols_given_info(has_info):
         cols[(sum(((h >> g) & 1) << g_sub for g_sub, g in enumerate(test_gs)))].append(h)
     return cols
 
-
-fail = 0
-ys = []
-ns = []
-amats = []
-infos = []
-X = []
-
-for iden, pool in pools:
-    pool = pool[pool['mutation'].isin(mut_dict)]
-    for cname in pool.columns[:-3]:
-        assert len(pool[cname].unique()) == 1 # ensure all non-mutation entries are the same
-    assert len(pool['mutation'].unique()) == len(pool) # ensure no doule entries
-    
-    n = pool['tested'].max() # number of haplotypes in pool
-    # boolean tuple for whether this pool has information about each marker
-    has_info = tuple(any(mut_dict[mutation][i] != -1 for mutation in pool['mutation']) for i in range(n_mut))    
-    
-    # configuration matrices are constructed based on collapsed haplotypes
-    code_to_prop = {}
-    for tested, present, mutation in zip(pool['tested'],pool['present'],pool['mutation']):
-        code = tuple(m for m, b in zip(mut_dict[mutation], has_info) if b)
-        code_to_prop[code] = code_to_prop.get(code, 0) + present/tested
-    y = []
-    amat = []
-    for code, prop in code_to_prop.items():
-        y.append(int(round(prop*n)))
-        amat.append(t2b(code))
-    y = np.array(y)
-    amat = np.array(amat)
-    
-    # checks if at least one solution to y = Az exists
-    H = 1 << sum(has_info)
-    prob = pulp.LpProblem("test", pulp.LpMinimize)
-    z = pulp.LpVariable.dicts("z", range(H), lowBound=0, cat='Integer')
-    prob += pulp.lpSum(z) == n
-    for j in range(len(y)):
-        prob += (pulp.lpSum([amat[j,k]*z[k] for k in range(H)]) == y[j])
-    prob.solve(solver)  
-    if prob.status == 1:
-        ys.append(y)
-        ns.append(n)
-        amats.append(amat)
-        infos.append(has_info)
-        row = pool.iloc[0,:]
-        lon, lat, start, end = row[['lon','lat','study start year','study end year']]
-        pos = closest_dict[(lon, lat)]
-        pfpr_val = np.mean([pfpr_dict[yr][yidxs[pos],xidxs[pos]]
-                            for yr in range(int(start), int(end)+1)])
-        X.append([lon, lat, (start+end)/2, pfpr_val])
-    else:
-        fail += 1
-N = len(ys)
-print(fail, 'pools have inconsistent counts')
-print(f'Use {N} pools for inference')
-
-X = np.array(X)
-lm_list = []
-N = len(ys)
-for i in tqdm(range(N)):
-    lm = LatentMult(amats[i], ys[i], ns[i], '../../4ti2-files/dhps-exact',
-                    solver, prefix_4ti2, enum_sols=True)
-    lm_list.append(lm)
-    nsol = ('failed' if lm.sols_var is None else len(lm.sols)) if lm.idx_var.size else 1
-
-pre_time = time() - t
-
-with open('../../test/dhps/data.pkl', 'wb') as fp:
-    pkl.dump({
-              'ys': ys,
-              'ns': ns,
-              'amats': amats,
-              'infos': infos,
-              'X': X,
-              'lm_list': lm_list,
-             }, fp)
-
-with open('../../test/dhps/data.pkl', 'rb') as fp:
-    data = pkl.load(fp)
-    ys = data['ys']
-    ns = data['ns']
-    amats = data['amats']
-    infos = data['infos']
-    X = data['X']
-    lm_list = data['lm_list']
-
-# dict that maps boolean tuple of whether pool has info about each marker
-# to list of pool indices
-# if pool has info on all markers, the index is separately stored in idxs_all_haps
-idxs_by_info = collections.defaultdict(list)
-idxs_all_haps = []
-for idx, info in enumerate(infos):
-    if info == (True, True, True):
-        idxs_all_haps.append(idx)
-    else:
-        idxs_by_info[info].append(idx)
-N = len(ys)
-H = 8
-G = 3
-
 idxs_allhaps = [i for i, info in enumerate(infos) if info == (True, True, True)]
 infos_excl_allhaps, idxs_excl_allhaps = zip(*[(info, i) for i, info in enumerate(infos) if info != (True, True, True)])
 
 pmat_dict = {}
 for info in set(infos):
     cols_list = cols_given_info(info)
-    pmat = np.zeros((len(cols_list), 8), int)
+    pmat = np.zeros((len(cols_list), H), int)
     for i, cols in enumerate(cols_list):
         pmat[i, cols] = 1
     pmat_dict[info] = jnp.array(pmat)
@@ -270,8 +279,7 @@ logfacts = scipy.special.gammaln(np.arange(1, max(lm.n_var for lm in lm_list)+2)
 
 
 # same approach as haplm.lm_inference.hier_latent_mult_mcmc with jaxify=True and methods=['exact']*N
-def loglike_fn(p):
-    
+def loglike_fn(p):    
     return (
             # deal with pools where there is info about all markers
             sum(lm_list[i].loglike_exact_jax(p[i], logfacts) for i in idxs_allhaps) +
@@ -317,9 +325,8 @@ with pm.Model() as model:
 # run MCMC
 t = time()
 with model:
-    idata = sample_numpyro_nuts(draws=draws, tune=tune, chains=chains, target_accept=0.9,
-                                random_seed=2023, model=model,
-                                postprocessing_chunks=25)
+    idata = pm.jax_sampling.sample_numpyro_nuts(draws=draws, tune=tune, chains=chains, target_accept=0.9,
+                                                random_seed=2023, postprocessing_chunks=25)
 mcmc_time = time() - t
 
 idata.sample_stats.attrs['preprocess_time'] = pre_time

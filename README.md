@@ -42,7 +42,8 @@ gcc AEML.c -o AEML -lgsl -lgslcblas -lm
 
 Further dependencies are required to run the spatiotemporal example under `test/dhps/`:
 ```
-mamba install cartopy xlrd
+pip install pycountry_convert
+mamba install tqdm cartopy pandas xlrd
 ```
 
 ## Tips

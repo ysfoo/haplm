@@ -1,6 +1,6 @@
 ## Spatiotemporal mapping of *Pfdhps* haplotype frequencies in sub-Saharan Africa 
 
-The code in this directory performs Bayesian inference on the haplotype frequencies of *Pfdhps* haplotypes at positions 437/540/581, see [[1]](#1). Haplotype frequencies are modelled as a softmax transformation of independent Gaussian processes. The data is available at the Worldwide Antimalarial Resistance Network SP Molecular Surveyor [website](https://www.wwarn.org/dhfr-dhps-surveyor). We also use incidence rates of *Plasmodium falciparum* as covariates, obtained from the Malaria Atlas Project at a resolution of $0.2^\circ\times 0.2^\circ$. Local copies of this data may be available upon request.
+The code in this directory performs Bayesian inference on the haplotype frequencies of *Pfdhps* haplotypes at positions 437/540/581; see [[1]](#1). Haplotype frequencies are modelled as a softmax transformation of independent Gaussian processes. The data is available at the Worldwide Antimalarial Resistance Network SP Molecular Surveyor [website](https://www.wwarn.org/dhfr-dhps-surveyor). We also use incidence rates of *Plasmodium falciparum* as covariates, obtained from the Malaria Atlas Project at a resolution of $0.2^\circ\times 0.2^\circ$. Local copies of this data may be available upon request.
 
 ## Steps to reproduce results from the paper
 1. Create the directory `data/dhps/` from the root directory of this repository.
@@ -12,7 +12,7 @@ The code in this directory performs Bayesian inference on the haplotype frequenc
 
 ## List of publications that reported inconsistent counts
 
-We find that 15 pools had observed counts that could not have been produced by any latent count vector, indicating that the data point is errorneous. The corresponding publications are:
+We find that 15 pools had observed counts that could not have been produced by any latent count vector, indicating that the data point is errorneous; see Supplementary Material 3 of [[1]](#1). The corresponding publications are:
 - http://www.ncbi.nlm.nih.gov/pubmed/?term=26437774
 - http://www.ncbi.nlm.nih.gov/pubmed/?term=28381273
 - https://pubmed.ncbi.nlm.nih.gov/31932374/

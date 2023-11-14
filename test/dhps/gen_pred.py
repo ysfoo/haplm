@@ -29,7 +29,7 @@ yidxs, xidxs = np.where(np.logical_not(mask))
 points = topleft + np.array([xidxs, yidxs]).T*step
 
 # all covariates for posterior predictive
-Xnew = np.c_[points, (yr+0.5)*np.ones(N_pred), pfpr_masked.compressed()]
+Xnew = np.c_[points, yr*np.ones(N_pred), pfpr_masked.compressed()]
 
 with open('processed.pkl', 'rb') as fp:
     data = pkl.load(fp)

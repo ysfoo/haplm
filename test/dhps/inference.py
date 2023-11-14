@@ -159,7 +159,9 @@ X = []
 
 for iden, pool in pools:
     pool = pool[pool['mutation'].isin(mut_dict)]
-    for cname in pool.columns[:-3]:
+    for cname in pool.columns:
+        if cname in ['tested', 'present', 'mutation']:
+            continue
         assert len(pool[cname].unique()) == 1 # ensure all non-mutation entries are the same
     assert len(pool['mutation'].unique()) == len(pool) # ensure no double entries
     

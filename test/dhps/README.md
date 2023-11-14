@@ -10,6 +10,19 @@ The code in this directory performs Bayesian inference on the haplotype frequenc
 5. The results are plotted in `results.ipynb`.
 6. To perform model checking, run 10-fold validation with `python validation.py 10 <fold>`, where `<fold>` takes on the values 1, 2, ..., 10. The results are plotted in `cv_results.ipynb`.
 
+## List of publications that reported inconsistent counts
+
+We find that 15 pools had observed counts that could not have been produced by any latent count vector, indicating that the data point is errorneous. The corresponding publications are:
+- http://www.ncbi.nlm.nih.gov/pubmed/?term=26437774
+- http://www.ncbi.nlm.nih.gov/pubmed/?term=28381273
+- https://pubmed.ncbi.nlm.nih.gov/31932374/
+- http://www.ncbi.nlm.nih.gov/pubmed/?term=24055717
+- http://www.ncbi.nlm.nih.gov/pubmed/?term=27209063
+- http://www.ncbi.nlm.nih.gov/pubmed/?term=27647575
+- https://www.ncbi.nlm.nih.gov/pubmed/?term=30897090
+- https://pubmed.ncbi.nlm.nih.gov/31438951/
+- https://www.ncbi.nlm.nih.gov/pubmed/?term=22540158
+
 ## References
 
 <a id="1">[1]</a> 

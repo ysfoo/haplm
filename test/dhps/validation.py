@@ -6,10 +6,6 @@ folds (F), and the number of the specific fold (between 1 and F) to perform infe
 The script `inference.py` must be run beforehand for the processed input file `processed.pkl`.
 '''
 
-import os
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-
 import numpy as np
 import scipy
 import collections
@@ -160,7 +156,7 @@ with pm.Model() as model:
 
     mean = pm.ZeroSumNormal('mu', sigma=2, shape=H)
     beta = pm.ZeroSumNormal('beta', sigma=2, shape=H)
-    gps = [GP(cov_func=SphereGneiting(ls_s[i], ls_t[h]))
+    gps = [GP(cov_func=SphereGneiting(ls_s[h], ls_t[h]))
            for h in range(H)]
     ps = pm.Deterministic('p', pm.math.softmax(pt.stack([gp.prior(f'f{h}', X=X[:,:3])
                                                          for h, gp in enumerate(gps)], axis=1)

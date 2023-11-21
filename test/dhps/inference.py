@@ -315,7 +315,7 @@ with pm.Model() as model:
 
     mean = pm.ZeroSumNormal('mu', sigma=2, shape=H)
     beta = pm.ZeroSumNormal('beta', sigma=2, shape=H)
-    gps = [GP(cov_func=SphereGneiting(ls_s[i], ls_t[h]))
+    gps = [GP(cov_func=SphereGneiting(ls_s[h], ls_t[h]))
            for h in range(H)]
     ps = pm.Deterministic('p', pm.math.softmax(pt.stack([gp.prior(f'f{h}', X=X[:,:3])
                                                          for h, gp in enumerate(gps)], axis=1)

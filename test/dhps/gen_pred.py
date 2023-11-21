@@ -84,7 +84,6 @@ sumstats['quantiles'] = np.quantile(pred_samples, np.arange(0, 1.01, 0.05), axis
 amat = mat_by_marker(3)
 geno_pred_samples = np.dot(pred_samples, amat.T)
 
-sumstats = {}
 sumstats['geno_mean'] = geno_pred_samples.mean(axis=0)
 sumstats['geno_sd'] = geno_pred_samples.std(axis=0)
 sumstats['geno_median'] = np.median(geno_pred_samples, axis=0)

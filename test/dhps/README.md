@@ -8,7 +8,7 @@ The code in this directory performs Bayesian inference on the haplotype frequenc
 3. Run the script `inference.py` for data preprocessing and MCMC inference.
 4. Run the script `gen_pred.py` with the year as a command line argument to compute the posterior distribution of haplotype frequencies for that year. A large file is created to store the posterior distribution produced, so the script is to be run multiple times (by year) to reduce peak RAM usage.
 5. The results are plotted in `results.ipynb`.
-6. To perform model checking, run 10-fold validation with `python validation.py 10 <fold>`, where `<fold>` takes on the values 1, 2, ..., 10. The results are plotted in `cv_results.ipynb`.
+6. To perform model checking, run 10-fold validation with `python validation.py 10 <fold>`, where `<fold>` takes on the values 1, 2, ..., 10. The results are plotted in `validation_results.ipynb`.
 
 ## List of publications that reported inconsistent counts
 

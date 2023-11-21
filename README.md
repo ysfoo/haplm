@@ -13,7 +13,7 @@ Comparisons between the proposed and existing methods, and further examples for 
 - `sim_study` Compare all methods with synthetic datasets over 3 markers (8 possible haplotypes). The pool size is varied across datasets to demonstrate how each method scales with pool size.
 - `encode` Compare all methods except MCMC-Exact with 100 datasets simulated based on [human data from the 1000 Genomes Project](https://www.internationalgenome.org/data-portal/population/CEU). Each datasets covers 8 markers (256 possible haplotypes). Partition ligation is used to determine input haplotypes where appropriate. MCMC-Exact is excluded due to computational reasons.
 - `time-series` Demonstrate a hierarchical use-case for the proposed methods. The synthetic dataset used consists of 30 time points of allele counts over 3 markers (8 haplotypes), where the haplotype frequencies vary over time. The haplotype frequencies are given a Gaussian process (GP) prior.
-- `dhps` Application of MCMC-Exact to a real dataset of genetic data relevant to antimalarial drug resistance, collated by the [Worldwide Antimalarial Resistance Network](https://www.wwarn.org/tracking-resistance/sp-molecular-surveyor). 241 data points are used over 3 markers of the `Pfdhps` gene, where the incomplete haplotypes reported are not the same across data points.
+- `dhps` Application of MCMC-Exact to a real dataset of genetic data relevant to antimalarial drug resistance, collated by the [Worldwide Antimalarial Resistance Network](https://www.wwarn.org/tracking-resistance/sp-molecular-surveyor). 241 data points are used over 3 markers of the `Pfdhps` gene, where the incomplete haplotypes reported are not the same across data points. See [[4]](#4) for details.
 
 There is also a comparison of an exact and an approximate (multinormal) likelihood for a toy example of the latent multinomial distribution under `mn_acc`, which demonstrates cases where the multinormal approximation breaks down.
 
@@ -72,3 +72,6 @@ Pirinen, M. (2009). Estimating population haplotype frequencies from pooled SNP 
 
 <a id="3">[3]</a> 
 Kuk, A. Y. C., Zhang, H., & Yang, Y. (2009). Computationally feasible estimation of haplotype frequencies from pooled DNA with and without Hardy-Weinberg equilibrium. Bioinformatics, 25(3), 379–386. [https://doi.org/10.1093/bioinformatics/btn623](https://doi.org/10.1093/bioinformatics/btn623)
+
+<a id="4">[4]</a> 
+Foo, Y. S., Flegg, J. A. (2023). A spatiotemporal model of multi-marker antimalarial resistance. medRxiv preprint medRxiv:2023.10.03.23296508. [https://doi.org/10.1101/2023.10.03.23296508](https://doi.org/10.1101/2023.10.03.23296508)
